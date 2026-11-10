@@ -34,7 +34,7 @@ flowchart LR
         TOF_F["전방 ToF<br/>VL53L0X"]
         TOF_R["후방 ToF<br/>VL53L0X 후보"]
         DRV["DRV8833<br/>모터 드라이버"]
-        MOTORS["TT 모터 ×2<br/>엔코더 없음 (추정)"]
+        MOTORS["TT 모터 ×2<br/>엔코더 없음"]
         BATT["AA ×4<br/>모터 전원"]
         PB["보조배터리<br/>보드 전원"]
     end
@@ -86,7 +86,6 @@ flowchart LR
 
 모터(TT 모터), DRV8833, 핀 배치, AA 배터리 4개, C270 웹캠, USB-C 허브는 이전 세미나 자료
 [emjdp/hyper-q-rover](https://github.com/emjdp/hyper-q-rover) 1주차 슬라이드를 기준으로 했습니다.
-엔코더 유무는 모터 선 수(모터당 2선)로 추정한 것이며 실물 확인이 필요합니다.
 
 ## 확인되지 않은 연결
 
