@@ -15,6 +15,9 @@
 | 안전장치 위치 | 비상정지·watchdog은 MCU가 항상 우선 적용 | 확정 (2026-11-10) |
 | 측정 시각 | Python이 값을 **받은 순간** `time.time()`으로 기록. 오래된 값은 이 시각으로 판단 | 선택 방향 |
 | 거리값 상태 | 거리값과 상태 코드(`status`)를 따로 보냄 | 선택 방향 |
+| 회전 방식 | 연속 회전 `spin`, 목표 마커가 보이면 정지. 최대 회전 시간은 MCU가 지킴. 기본 방향은 오른쪽(시계) | 선택 방향 ([#8](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/8)) |
+| 마커 | 5개, 칸마다 다른 ID. 비콘이 목표 칸 번호를 알려줌 | 확정 (2026-11-10) |
+| 이동량 추정 | 엔코더 없음. 시간 기반으로 추정하고 `Odometry` 모듈로 분리 | 선택 방향 ([#9](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/9)) |
 
 ---
 
@@ -38,7 +41,7 @@
 | `brake()` | 네 핀 모두 HIGH로 100ms 급제동 후 `coast()` |
 | `startDrive(left, right)` | 출발할 때 120ms 동안 ±255로 밀고 나서 목표 속도로 |
 | `setWheels(left, right)` | 정지↔주행이 바뀌는 순간에만 `brake()`/`startDrive()` 호출 |
-| 회전 함수 | **미정.** 별도 이슈에서 논의 |
+| `spin(direction, pwm)` | 제자리 연속 회전. 정지는 `drive(0, 0)`. 이름·인자는 [#8](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/8)에서 확정 |
 
 ### 튜닝 값 (실험으로 결정)
 
@@ -80,6 +83,7 @@
 |---|---|---|---|---|
 | `distance` | MCU → Python | `dist_mm`(int), `status`(int) | 측정할 때마다 | 선택 방향 |
 | `drive` | Python → MCU | `left`, `right` (`-255 ~ 255`) | 바뀔 때 + `HEARTBEAT_SEC`마다 | 선택 방향 |
+| `spin` | Python → MCU | `direction`, `pwm`, `max_ms` (예시) | 회전 시작할 때 | 미정 ([#8](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/8)) |
 
 `drive`는 값이 그대로여도 `HEARTBEAT_SEC`마다 다시 보냅니다. 그러지 않으면 MCU watchdog이 "Python이 멈췄다"고 판단해 정지합니다.
 
@@ -119,16 +123,45 @@ detect_markers(frame) -> list[Marker]
 | 항목 | 값 | 상태 |
 |---|---|---|
 | 카메라 | C270 USB 웹캠 (전방, 1주차 개발용) | 이전 로버 기준 |
-| 마커 사전 | 미정 (예: `DICT_4X4_50`) | 마커 규격 이슈에서 결정 |
-| 마커 크기 | 미정 | 마커 규격 이슈에서 결정 |
+| 마커 개수 | 5개, 칸마다 다른 ID. 목표 ID가 아닌 마커는 무시 | 확정 (2026-11-10) |
+| 마커 사전 | 미정 (예: `DICT_4X4_50`) | [#6](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/6)에서 결정 |
+| 마커 크기·높이 | 미정 | [#6](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/6)에서 결정 |
 | 오차 표현 | 이전 코드는 정수 `-100 ~ +100`. 여기서는 `-1.0 ~ +1.0` 제안 | 팀 합의 필요 |
 
 ---
 
-## 6. 아직 정하지 않은 것
+## 6. 이동량 추정 (Odometry, Python)
 
-- [ ] 회전 함수의 이름과 인자 (별도 이슈)
+엔코더가 없어 지금은 **속도 × 시간**으로 추정합니다. 나중에 엔코더 모터로 바꿔도 상태 기계 코드를 고치지 않도록 구현을 분리합니다. ([#9](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/9))
+
+```python
+class Odometry:
+    def reset(self): ...
+    def distance_cm(self) -> float: ...   # 지금 구현: CM_PER_SEC × 주행 시간
+    def heading_deg(self) -> float: ...   # 지금 구현: DEG_PER_SEC × 회전 시간
+```
+
+| 이름 | 초기값 | 비고 |
+|---|---|---|
+| `CM_PER_SEC` | 미측정 | 직진 속도. `TODO: 실험으로 결정` |
+| `DEG_PER_SEC` | 미측정 | 제자리 회전 속도. `TODO: 실험으로 결정` |
+| `TRIM_LEFT`, `TRIM_RIGHT` | `0` | 직진할 때 휘어짐을 보정하는 값. `TODO: 실험으로 결정` |
+
+---
+
+## 7. 비콘 (beacon, Python)
+
+1주차 후반 부품 도착 후 정합니다.
+
+- 비콘은 **목표 칸 번호**를 함께 보냅니다 (예: iBeacon의 major/minor 값). 로버는 이 번호와 같은 ID의 마커를 찾습니다.
+- 수신 XIAO → USB 시리얼 → Python으로 들어오는 형식(ID, RSSI, 칸 번호)은 미정입니다.
+
+---
+
+## 8. 아직 정하지 않은 것
+
+- [ ] 회전 함수·메시지의 이름과 인자 ([#8](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/8))
 - [ ] 비콘 메시지 형식 (1주차 후반, 부품 도착 후)
-- [ ] ArUco 마커 사전·크기, 마커를 목표 칸에만 둘지 5칸 모두에 둘지
+- [ ] ArUco 마커 사전·크기·높이 ([#6](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/6))
 - [ ] 오차 표현 범위 (`-1.0 ~ 1.0` vs `-100 ~ 100`)
 - [ ] 후방 ToF 추가 시 Bridge 메시지 구분 방법 (예: `distance`에 센서 위치 인자 추가)
