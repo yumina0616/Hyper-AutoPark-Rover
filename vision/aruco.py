@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 import cv2
 import numpy as np
@@ -13,6 +13,10 @@ class Marker:
     err_x: float
     size_px: float
     t: float
+    # 마커 네 꼭짓점의 픽셀 좌표 (x, y). 순서: 마커 기준 좌상 → 우상 → 우하 → 좌하
+    # "마커 기준"이라 마커를 돌려 붙이면 화면 위치가 달라짐 → 마커는 정방향으로 부착할 것
+    # 마커가 기울어진 정도(skew) 계산용. 기본값이 있어서 corners 없이 만든 Marker도 그대로 동작
+    corners: list[tuple[float, float]] = field(default_factory=list)
 
 
 class ArucoDetector:
@@ -74,6 +78,7 @@ class ArucoDetector:
                     err_x=round(err_x, 4),
                     size_px=round(size_px, 2),
                     t=now,
+                    corners=[(float(x), float(y)) for x, y in pts],
                 )
             )
 
