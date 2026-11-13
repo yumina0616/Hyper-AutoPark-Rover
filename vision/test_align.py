@@ -5,14 +5,13 @@
 실행 방법 (레포 최상위 폴더에서):
     python -m pytest vision/test_align.py
 pytest가 없으면:
-    cd vision
-    python -m unittest test_align
+    python -m unittest vision.test_align
 """
 
 import unittest
 from dataclasses import dataclass
 
-from align import AlignConfig, Aligner, AlignStatus
+from vision.align import AlignConfig, Aligner, AlignStatus
 
 
 @dataclass
