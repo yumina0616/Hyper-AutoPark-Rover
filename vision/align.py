@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Protocol
@@ -205,6 +206,42 @@ class Aligner:
         left, right = _limit(base + turn, base - turn)
         status = AlignStatus.ALIGNED if aligned else AlignStatus.ADJUSTING
         return AlignResult(left, right, status, err, turn)
+
+
+# ─────────────────────────────────────────────────────────────
+#  마커 기울어짐 (skew)
+# ─────────────────────────────────────────────────────────────
+def marker_skew(marker: object) -> Optional[float]:
+    """마커가 카메라를 비스듬히 보고 있는 정도를 계산한다. (실험 단계)
+
+    원리: 마커를 비스듬히 보면 카메라에 가까운 쪽 변이 더 길게 보인다.
+    왼쪽 세로변과 오른쪽 세로변의 길이를 비교한다.
+
+        skew = (왼쪽 변 - 오른쪽 변) / (왼쪽 변 + 오른쪽 변)
+
+    반환값
+        0     정면 (기울어지지 않음)
+        +     왼쪽 변이 더 김 → 마커의 왼쪽이 카메라에 더 가까움
+        -     오른쪽 변이 더 김 → 마커의 오른쪽이 카메라에 더 가까움
+        None  계산할 수 없음 (corners가 없거나 4개가 아님, 크기가 0)
+
+    주의
+        - 인식 모듈 Marker의 corners(마커 기준 좌상, 우상, 우하, 좌하)를 쓴다.
+          마커를 돌려 붙이면 좌우가 바뀌므로 마커는 정방향으로 붙여야 한다.
+        - 조금 기울었을 때는 값 차이가 작다. 기울기별로 실제 값을 측정한 뒤
+          쓸 만한지 판단한다. 부족하면 자세 추정(solvePnP)으로 바꾼다.
+        - 아직 정렬 계산(Aligner)에는 반영하지 않는다. 어떻게 쓸지는 #7에서 결정.
+    """
+    corners = getattr(marker, "corners", None)
+    if not corners or len(corners) != 4:
+        return None
+
+    top_left, top_right, bottom_right, bottom_left = corners
+    left = math.dist(top_left, bottom_left)
+    right = math.dist(top_right, bottom_right)
+    if left + right == 0:
+        return None
+    return (left - right) / (left + right)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:

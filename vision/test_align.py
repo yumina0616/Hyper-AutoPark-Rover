@@ -11,7 +11,7 @@ pytest가 없으면:
 import unittest
 from dataclasses import dataclass
 
-from vision.align import AlignConfig, Aligner, AlignStatus
+from vision.align import AlignConfig, Aligner, AlignStatus, marker_skew
 
 
 @dataclass
@@ -165,6 +165,48 @@ class ScaleAndSignTest(unittest.TestCase):
     def test_bad_mode(self):
         with self.assertRaises(ValueError):
             Aligner().step(marker(0.0), TARGET, NOW, mode="fly")
+
+
+@dataclass
+class CornerMarker:
+    """꼭짓점만 있는 가짜 마커 (marker_skew 테스트용)."""
+
+    corners: list
+
+
+def square(x=100, y=100, s=50):
+    """정면에서 본 정사각형: 좌상, 우상, 우하, 좌하."""
+    return [(x, y), (x + s, y), (x + s, y + s), (x, y + s)]
+
+
+class MarkerSkewTest(unittest.TestCase):
+    def test_front_is_zero(self):
+        self.assertAlmostEqual(marker_skew(CornerMarker(square())), 0.0)
+
+    def test_left_edge_longer_is_positive(self):
+        # 왼쪽 변 60, 오른쪽 변 40 → (60-40)/(60+40) = 0.2
+        c = [(0, 0), (50, 10), (50, 50), (0, 60)]
+        self.assertAlmostEqual(marker_skew(CornerMarker(c)), 0.2)
+
+    def test_right_edge_longer_is_negative(self):
+        c = [(0, 10), (50, 0), (50, 60), (0, 50)]
+        self.assertAlmostEqual(marker_skew(CornerMarker(c)), -0.2)
+
+    def test_size_does_not_matter(self):
+        # 같은 모양이면 크기(거리)가 달라도 같은 값
+        small = [(0, 0), (50, 10), (50, 50), (0, 60)]
+        big = [(x * 3, y * 3) for x, y in small]
+        self.assertAlmostEqual(marker_skew(CornerMarker(small)), marker_skew(CornerMarker(big)))
+
+    def test_no_corners_is_none(self):
+        self.assertIsNone(marker_skew(CornerMarker([])))
+        self.assertIsNone(marker_skew(FakeMarker(id=0, err_x=0.0, t=0.0)))  # corners 속성 자체가 없음
+
+    def test_wrong_count_is_none(self):
+        self.assertIsNone(marker_skew(CornerMarker(square()[:3])))
+
+    def test_zero_size_is_none(self):
+        self.assertIsNone(marker_skew(CornerMarker([(5, 5)] * 4)))
 
 
 if __name__ == "__main__":
