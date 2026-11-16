@@ -1,0 +1,10 @@
+profiles:
+  default:
+    fqbn:
+    platforms:
+      - platform: arduino:zephyr
+    libraries:
+      - dependency: Adafruit BusIO (1.17.4)
+      - Adafruit_VL53L0X (1.2.5)
+
+default_profile: default
