@@ -2,3 +2,10 @@ __pycache__/
 *.py[cod]
 .DS_Store
 apps/aruco-test/markers/
+
+# Arduino 빌드 결과물
+.vscode/
+build/
+*.hex
+*.elf
+*.bin
