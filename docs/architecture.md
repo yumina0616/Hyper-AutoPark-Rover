@@ -76,6 +76,80 @@ flowchart LR
 
 두 쪽은 [인터페이스 문서](interfaces.md)에 정의한 Bridge 메시지로만 연결합니다.
 
+## 판단·실행 분리 (모듈 단위)
+
+> **상태:** 선택 방향 (2026-11-16). 팀 합의 후 확정합니다.
+
+```mermaid
+flowchart LR
+    CAM[카메라]
+    HW_M[DRV8833 · TT 모터 ×2]
+    TOF[VL53L0X ToF]
+
+    subgraph MPU["MPU · Python — 판단"]
+        VISION["vision<br/>ArUco · 정렬 제안"]
+        BEACON["beacon<br/>RSSI (예정)"]
+        SM["<b>state_machine</b><br/>단계 판단 · 바퀴 값 결정"]
+        IO["Bridge 송수신<br/>수신 시각 · heartbeat"]
+        VISION --> SM
+        BEACON -.-> SM
+        SM <--> IO
+    end
+
+    subgraph MCU["MCU · 스케치 — 실행"]
+        CMD["command<br/>drive 수신"]
+        SENSOR["sensor<br/>상태 코드 3종"]
+        SAFETY["<b>safety</b><br/>watchdog · 비상정지 · 오류"]
+        MOTOR["motor<br/>setWheels · 출발 보정"]
+        CMD --> SAFETY
+        SENSOR --> SAFETY
+        SAFETY --> MOTOR
+    end
+
+    CAM --> VISION
+    IO -- "drive(L, R)" --> CMD
+    SENSOR -- "distance" --> IO
+    MOTOR --> HW_M
+    TOF --> SENSOR
+```
+
+- **명령은 `state_machine` 한 곳에서만 나갑니다.** vision·beacon은 제안만 하고 MCU로 직접 보내지 않습니다.
+- **MCU의 `safety`가 항상 마지막에 확인합니다.** 위험하면 Python 명령과 상관없이 `(0, 0)`으로 바꿉니다.
+- Bridge 메시지는 `drive`(Python → MCU)와 `distance`(MCU → Python) 두 개뿐입니다.
+
+### 모듈별 역할
+
+| 위치 | 모듈 | 하는 일 |
+|---|---|---|
+| MPU | `vision` | 마커 검출(`detect_markers`), 정렬 보정 제안(`Aligner`), 기울어짐(`marker_skew`) |
+| MPU | `beacon` | 목표 비콘 RSSI 필터·최댓값 추적 (1주차 후반부터) |
+| MPU | `state_machine` | 현재 단계(탐색·정렬·후진 등)를 판단하고 `drive(left, right)` 결정 ([상태 기계 문서](state_machine.md)) |
+| MPU | Bridge 송수신 | `distance`를 받은 시각과 함께 기록, `drive`를 바뀔 때 + `HEARTBEAT_SEC`마다 전송 |
+| MCU | `command` | `drive`를 받아 `cmdLeft`, `cmdRight`, 받은 시각(`lastCmdMs`) 저장 |
+| MCU | `sensor` | ToF 읽기, 상태 코드(OK / 범위 밖 / 오류)와 함께 `distance` 전송 |
+| MCU | `safety` | watchdog, 비상정지, 센서 오류 처리 → 최종 바퀴 값 결정 |
+| MCU | `motor` | `setWheels()`: 정지↔주행이 바뀔 때만 출발 보정, 그 외 `drive()` |
+
+### MCU `safety` 우선순위
+
+| 순서 | 조건 | 결과 |
+|---|---|---|
+| 1 | 마지막 `drive` 이후 `WATCHDOG_MS`(1초) 경과, 또는 부팅 후 첫 명령 전 | 정지 |
+| 2 | 거리 센서 상태가 오류(`RANGE_ERROR`) | 정지 |
+| 3 | 앞 거리 `< EMERGENCY_MM`(80mm)이고 전진 중 | 정지 |
+| 4 | 위에 해당 없음 | Python 명령 그대로 실행 |
+
+MCU 메인 루프는 긴 `delay()` 없이 20~50ms 주기로 반복합니다. 회전·후진 중에도 센서를 계속 읽어야 하기 때문입니다.
+
+### 기존 코드 재사용 (거리·주행 팀 장애물 회피 코드, [#17](https://github.com/yumina0616/Hyper-AutoPark-Rover/pull/17))
+
+| 기존 파일 | 처리 |
+|---|---|
+| `config.h` | 그대로 사용 + `WATCHDOG_MS`, `EMERGENCY_MM` 추가 |
+| `sensor.*` | 그대로 사용 + 상태 코드 3종 반환 |
+| `motor.*` | `drive`, `brake`, `startDrive`는 그대로. `moveForward`, `turnAround`는 제거 (판단은 Python이 함) |
+| `behavior.*` | 제거 → `command.*`, `safety`로 대체 |
+
 ## 주차 배치와 센서 역할 (2026-11-10 결정)
 
 - 주차칸 5개는 **진행 방향 왼쪽**에 둡니다.
