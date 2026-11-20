@@ -148,8 +148,9 @@ class FrontParkingController:
         self._last_counted_marker_t = None
         self._last_counted_dist_t = None
 
-        # 6. ToF만 먼저 150mm 이내로 들어왔는데 마커 크기/정렬이 안 맞으면 안전 정지
-        if tof_close:
+        # 6. ToF만 먼저 150mm 이내로 들어왔는데 마커 크기가 작으면(미충족) 안전 정지
+        # 마커 크기(vision_close)까지 충족한 상태라면 중심 오차만 튄 것이므로 ALIGN으로 재정렬
+        if tof_close and not vision_close:
             self.state = ParkingState.SAFETY_STOP
             return StepOutput(0, 0, self.state, self.parking_samples)
 
