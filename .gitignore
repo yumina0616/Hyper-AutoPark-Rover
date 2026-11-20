@@ -9,3 +9,10 @@ build/
 *.hex
 *.elf
 *.bin
+
+# PlatformIO 빌드 결과물
+.pio/
+
+# scripts/sync_app_modules.py가 앱 폴더로 복사한 공용 모듈 (원본은 레포 최상위)
+apps/qrover_drive/python/beacon/
+apps/qrover_drive/python/state_machine/

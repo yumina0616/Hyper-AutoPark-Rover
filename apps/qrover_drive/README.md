@@ -19,12 +19,52 @@ qrover_drive/
 │   ├── motor.*            바퀴 구동, 출발 보정
 │   └── sketch.yaml        라이브러리 목록
 ├── python/                MPU (Python)
-│   ├── main.py            확인용 앱 (거리 출력 + 확인용 주행 순서)
-│   └── bridge_link.py     Bridge 송수신, heartbeat, 시작 대기, 오래된 값 판단
+│   ├── main.py            MODE로 동작 선택: idle / test_sequence / beacon_search
+│   ├── bridge_link.py     Bridge 송수신, heartbeat, 시작 대기, 오래된 값 판단
+│   ├── beacon_mode.py     비콘 탐색(1단계)을 Bridge 주행과 연결
+│   ├── rssi_client.py     RSSI 중계기에 접속해서 RSSI 받기
+│   └── beacon/, state_machine/   ← scripts/sync_app_modules.py가 복사 (커밋 안 됨)
 └── tests/                 노트북에서 돌리는 테스트
     ├── test_bridge_link.py
+    ├── test_beacon_mode.py
     └── test_safety.cpp
 ```
+
+## 주행 흐름 1단계: 비콘 탐색 (`MODE = "beacon_search"`)
+
+목표 칸 비콘의 RSSI가 가장 셌던 지점을 찾아 되돌아옵니다.
+
+```
+[App Lab 바깥]  rx_scan.py ──▶ rssi_relay.py ──TCP──┐
+[App Lab 앱 안]                                      ▼
+                rssi_client → BeaconSearch(판단) → bridge_link ──Bridge drive──▶ MCU
+```
+
+App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바깥에서 하고 **중계기(`beacon/rssi_relay.py`)가 TCP로 앱에 넘깁니다.**
+
+흐름: 직진 탐색 → RSSI가 세지면 감속 → 최댓값보다 6dB 떨어진 상태가 1초 이어지면 "지나쳤다" → 최댓값 이후 보낸 명령을 거꾸로 같은 시간만큼 후진 → 정지.
+목표 칸 신호를 한 번 받은 뒤에만 출발합니다. 시간 초과(30초)나 신호 끊김(1초)이면 정지합니다.
+판단 로직: [`state_machine/beacon_search.py`](../../state_machine/beacon_search.py), [`beacon/peak_detector.py`](../../beacon/peak_detector.py)
+
+**실행 순서 (UNO Q)**
+
+1. 공용 모듈을 앱 폴더로 복사 (레포 최상위에서, 원본을 고칠 때마다 다시)
+   ```bash
+   python3 scripts/sync_app_modules.py
+   ```
+2. App Lab 바깥에서 수신 + 중계 (먼저 실행, 계속 켜 둠)
+   ```bash
+   python3 beacon/rx_scan.py | python3 beacon/rssi_relay.py
+   ```
+3. `python/main.py`에서 `MODE = "beacon_search"`, `TARGET_SLOT = 비콘을 둔 칸 번호`로 바꾸고 앱 실행
+4. 로그에 `[rssi] 중계기 접속` → `[beacon] 칸 N 신호 확인 → 탐색 시작` → `RETURN` → `DONE`이 나오는지 확인
+
+**로버를 움직이지 않고 감지만 확인하기**: `python3 beacon/rx_scan.py | python3 -m beacon.peak_monitor`
+
+**확인 안 된 것**
+- 앱(컨테이너) 안에서 중계기에 접속되는지. `127.0.0.1` → 컨테이너 게이트웨이 순서로 시도합니다. 안 되면 보드 IP를 `RSSI_RELAY_HOST` 환경 변수로 지정합니다
+- 실제 RSSI 흔들림에 맞는 감지 설정값 (지금은 가상 로버 시뮬레이션 기준)
+- 같은 PWM·같은 시간으로 되돌아갈 때의 실제 위치 오차
 
 `motor`, `sensor`, `config`는 [`apps/qrover_obstacle_avoidance`](../qrover_obstacle_avoidance) (#17)에서 가져와 고쳤습니다.
 
