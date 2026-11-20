@@ -123,7 +123,5 @@ class StageTests(unittest.TestCase):
         stage.step(frame(2, None, t=100.1), now=100.1)
         r = stage.step(frame(3, 0.01, t=100.2), now=100.2)
         self.assertEqual(r.state, "CENTERING_CHECK")
-
-
 if __name__ == "__main__":
     unittest.main()
