@@ -4,8 +4,8 @@
 실제 구동에는 QroverMotor.set_wheels()를 하드웨어에 맞게 구현해야 합니다.
 
 사용:
-    python aruco_auto_align.py --camera 0 --target-id 0
-    python aruco_auto_align.py --self-test
+    python -m vision.aruco_auto_align --camera 0 --target-id 0
+    python -m vision.aruco_auto_align --self-test   (레포 최상위에서 실행)
 """
 
 from __future__ import annotations
@@ -227,46 +227,6 @@ def run(camera_index: int, target_id: int, show_window: bool, search: bool):
             cv2.destroyAllWindows()
 
 
-class ControllerTests(unittest.TestCase):
-    def test_marker_right_turn_right(self):
-        c = ArucoAlignController()
-        cmd = c.update(500, 640, now=0.0)
-        self.assertEqual(cmd.state, "TURNING_RIGHT")
-        self.assertGreater(cmd.left, 0)
-        self.assertLess(cmd.right, 0)
-
-    def test_marker_left_turn_left(self):
-        c = ArucoAlignController()
-        cmd = c.update(120, 640, now=0.0)
-        self.assertEqual(cmd.state, "TURNING_LEFT")
-        self.assertLess(cmd.left, 0)
-        self.assertGreater(cmd.right, 0)
-
-    def test_five_stable_center_frames_stop_and_latch(self):
-        c = ArucoAlignController()
-        for i in range(4):
-            cmd = c.update(325, 640, now=float(i))
-            self.assertEqual(cmd.state, "CENTERING_CHECK")
-            self.assertEqual((cmd.left, cmd.right), (0.0, 0.0))
-        cmd = c.update(325, 640, now=4.0)
-        self.assertEqual(cmd.state, "ALIGNED")
-        self.assertEqual(c.update(600, 640, now=5.0).state, "ALIGNED")
-
-    def test_lost_after_seen_stops(self):
-        c = ArucoAlignController(AlignConfig(search_if_missing=True))
-        self.assertEqual(c.update(None, 640, now=0.0).state, "SEARCHING")
-        c.update(500, 640, now=1.0)
-        cmd = c.update(None, 640, now=2.0)
-        self.assertEqual((cmd.left, cmd.right), (0.0, 0.0))
-
-    def test_timeout_stops(self):
-        c = ArucoAlignController()
-        c.update(500, 640, now=0.0)
-        cmd = c.update(500, 640, now=15.0)
-        self.assertEqual(cmd.state, "TIMEOUT")
-        self.assertEqual((cmd.left, cmd.right), (0.0, 0.0))
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ArUco 마커를 보며 제자리 회전해 중앙 정렬")
     parser.add_argument("--camera", type=int, default=0, help="웹캠 0 / USB 카메라 1 등")
@@ -276,9 +236,6 @@ if __name__ == "__main__":
     parser.add_argument("--self-test", action="store_true", help="카메라 없이 제어 로직 자체 점검")
     args = parser.parse_args()
     if args.self_test:
-        unittest.main(argv=["aruco_auto_align.py"], exit=False)
+        unittest.main(module="vision.test_aruco_auto_align", argv=["aruco_auto_align"], exit=False)
     else:
         run(args.camera, args.target_id, not args.no_window, args.search)
-
-
-
