@@ -1,0 +1,5 @@
+name: qrover-drive
+description: "Q-ROVER 주행 실행부 - Python이 drive를 보내고 MCU가 안전장치와 함께 실행 (#19)"
+ports: []
+bricks: []
+icon: 🚗
