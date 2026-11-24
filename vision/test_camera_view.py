@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 
 from vision.aruco_auto_align import StageResult
-from vision.camera_view import FpsMeter, marker_line, stage_line, status_lines
+from vision.camera_view import FpsMeter, marker_line, pose_line, stage_line, status_lines
+from vision.pose import Pose, PoseAverager
 
 try:
     import cv2
@@ -73,8 +74,24 @@ class TextTests(unittest.TestCase):
         lines = status_lines(12.0, 8.5, 640, 480, 1, markers, StageResult(0, 0, "TURNING"))
         self.assertTrue(lines[0].startswith("FPS 12.0"))
         self.assertIn("target ID 1", lines[0])
-        self.assertTrue(lines[2].startswith("ID 1"))
-        self.assertTrue(lines[3].startswith("ID 3"))
+        self.assertTrue(lines[2].startswith("pose now"))
+        self.assertTrue(lines[3].startswith("pose avg"))
+        self.assertTrue(lines[4].startswith("ID 1"))
+        self.assertTrue(lines[5].startswith("ID 3"))
+
+    def test_pose_line(self):
+        self.assertEqual(pose_line("now", None), "pose now: n/a")
+        text = pose_line("avg", Pose(412.4, -23.6, 4.25, 1.0))
+        self.assertEqual(text, "pose avg: dist   412mm  offset   -24mm  yaw  +4.2deg")
+
+    def test_pose_averager(self):
+        avg = PoseAverager(2)
+        avg.add(Pose(100, 0, 0, 0))
+        avg.add(Pose(200, 10, 2, 0))
+        out = avg.add(Pose(300, 20, 4, 0))   # 가장 오래된 값은 빠짐
+        self.assertEqual((out.wall_dist_mm, out.offset_mm, out.yaw_deg), (250, 15, 3))
+        avg.clear()
+        self.assertEqual(len(avg), 0)
 
     def test_status_lines_no_marker(self):
         lines = status_lines(0.0, 0.0, 640, 480, 0, [], StageResult(0, 0, "MARKER_MISSING"))
@@ -136,6 +153,20 @@ class CameraViewIntegrationTests(unittest.TestCase):
         for _ in range(10):
             seq, _ = view.wait_jpeg(seq)
         self.assertEqual(view.stage.finished_state, "ALIGNED")
+
+    def test_frontal_marker_pose_shown(self):
+        # 정중앙 정면 마커 200px, 화각 45° → 초점거리 약 772px → 거리 약 386mm
+        view, _ = self._run_view(marker_id=0, x=220)
+        seq = -1
+        for _ in range(3):
+            seq, _ = view.wait_jpeg(seq)
+        self.assertGreater(len(view.pose_avg), 0)
+        pose = view.pose_estimator.estimate(
+            type("M", (), {"corners": [(220, 140), (420, 140), (420, 340), (220, 340)]})(), 640, 480
+        )
+        self.assertAlmostEqual(pose.wall_dist_mm, 386, delta=3)
+        self.assertAlmostEqual(pose.offset_mm, 0, delta=2)
+        self.assertAlmostEqual(pose.yaw_deg, 0, delta=1)
 
     def test_wrong_marker_stops(self):
         view, _ = self._run_view(marker_id=3, x=400, target_id=0)

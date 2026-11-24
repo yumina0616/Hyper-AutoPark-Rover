@@ -5,9 +5,10 @@ UNO Q에서 실행하면 카메라 영상 위에 인식 결과와 숫자를 그�
 모터에는 아무 명령도 보내지 않는다 (정렬 단계의 바퀴 값은 '제안값'만 표시).
 
 실행 (UNO Q에 SSH 접속 후, 레포 최상위 폴더에서):
-    python3 -m vision.camera_view                     # 카메라 0번, 목표 마커 0번
-    python3 -m vision.camera_view --target 2 --camera 1
-    python3 -m vision.camera_view --width 1280 --height 720
+    python3 -m vision.camera_view --camera 2          # UNO Q의 C270은 /dev/video2, 목표 마커 0번
+    python3 -m vision.camera_view --camera 2 --target 3
+    python3 -m vision.camera_view --camera 2 --hfov 45 --marker-mm 100
+    (노트북 웹캠은 --camera 0)
 
 화면에 보이는 것
     - 초록 테두리: 목표 마커 / 노란 테두리: 다른 마커
@@ -15,6 +16,11 @@ UNO Q에서 실행하면 카메라 영상 위에 인식 결과와 숫자를 그�
     - 마커마다: ID, err_x(좌우 오차 -1~1), size(한 변 픽셀), skew(기울어짐)
     - FPS: 카메라 읽기 + 검출까지 포함한 초당 처리 장수
     - 정렬 단계(vision.aruco_auto_align): 상태와 바퀴 제안값 L/R
+    - 목표 마커 자세(vision.pose, 실험 단계): 방금 값(now)과 최근 10프레임 평균(avg)
+        dist   벽(마커 평면)까지 수직 거리 mm
+        offset 칸 중심선에서 옆으로 벗어난 거리 mm (+ = 카메라가 오른쪽)
+        yaw    칸 방향과 로버 정면의 각도 차 (+ = 오른쪽으로 돌아야 똑바름)
+      화각(--hfov)으로 계산한 대략값이다. 카메라 보정 전에는 dist가 몇 % 틀릴 수 있다.
 
 브라우저 버튼
     - 사진 저장: 지금 화면을 보드의 --snap-dir 폴더에 저장 (기본 ~/qrover_snaps)
@@ -37,6 +43,7 @@ from typing import Optional, Sequence
 
 from vision.align import marker_skew
 from vision.aruco_auto_align import ArucoAlignStage, MarkerFrame, StageConfig, StageResult
+from vision.pose import DEFAULT_HFOV_DEG, DEFAULT_MARKER_MM, Pose
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,16 @@ def stage_line(result: StageResult) -> str:
     return text
 
 
+def pose_line(label: str, pose: Optional[Pose]) -> str:
+    """목표 마커 자세 한 줄."""
+    if pose is None:
+        return f"pose {label}: n/a"
+    return (
+        f"pose {label}: dist {pose.wall_dist_mm:5.0f}mm  offset {pose.offset_mm:+5.0f}mm  "
+        f"yaw {pose.yaw_deg:+5.1f}deg"
+    )
+
+
 def status_lines(
     fps: float,
     detect_ms: float,
@@ -90,11 +107,15 @@ def status_lines(
     target_id: int,
     markers: Sequence[object],
     stage: StageResult,
+    pose_now: Optional[Pose] = None,
+    pose_avg: Optional[Pose] = None,
 ) -> list[str]:
     """화면 위에 그릴 줄 목록. 목표 마커를 맨 위에 둔다."""
     lines = [
         f"FPS {fps:4.1f}  detect {detect_ms:5.1f}ms  {width}x{height}  target ID {target_id}",
         stage_line(stage),
+        pose_line("now", pose_now),
+        pose_line("avg", pose_avg),
     ]
     ordered = sorted(markers, key=lambda m: (m.id != target_id, m.id))
     if ordered:
@@ -117,6 +138,8 @@ class ViewConfig:
     target_id: int = 0
     jpeg_quality: int = 70
     snap_dir: Path = Path.home() / "qrover_snaps"
+    marker_mm: float = DEFAULT_MARKER_MM
+    hfov_deg: float = DEFAULT_HFOV_DEG
 
 
 class CameraView:
@@ -133,6 +156,10 @@ class CameraView:
         self._reset_requested = threading.Event()
         # 화면 확인용이라 제한 시간으로 끝나지 않게 길게 둔다
         self.stage = ArucoAlignStage(cfg.target_id, StageConfig(timeout_sec=24 * 3600))
+        from vision.pose import PoseAverager, PoseEstimator
+
+        self.pose_estimator = PoseEstimator(marker_mm=cfg.marker_mm, hfov_deg=cfg.hfov_deg)
+        self.pose_avg = PoseAverager(10)
         self._thread = threading.Thread(target=self._loop, daemon=True, name="camera-view")
 
     # --- 외부(웹 서버)에서 쓰는 함수 -------------------------------------------
@@ -212,7 +239,8 @@ class CameraView:
                 if self._reset_requested.is_set():
                     self._reset_requested.clear()
                     self.stage.reset(time.time())
-                    print("[camera_view] 정렬 단계 초기화", flush=True)
+                    self.pose_avg.clear()
+                    print("[camera_view] 정렬 단계·자세 평균 초기화", flush=True)
 
                 ok, frame = cap.read()
                 if not ok or frame is None:
@@ -227,7 +255,15 @@ class CameraView:
                 seq = self._seq + 1
                 result = self.stage.step(MarkerFrame(seq, captured_t, markers), now=time.time())
                 h, w = frame.shape[:2]
-                lines = status_lines(meter.fps, detect_ms, w, h, self.cfg.target_id, markers, result)
+                target = next((m for m in markers if m.id == self.cfg.target_id), None)
+                pose_now = None if target is None else self.pose_estimator.estimate(target, w, h)
+                if pose_now is None:
+                    self.pose_avg.clear()  # 끊기면 평균도 새로 시작
+                    pose_avg = None
+                else:
+                    pose_avg = self.pose_avg.add(pose_now)
+                lines = status_lines(meter.fps, detect_ms, w, h, self.cfg.target_id, markers,
+                                     result, pose_now, pose_avg)
                 self._draw(cv2, frame, markers, lines)
 
                 ok, buf = cv2.imencode(
@@ -306,7 +342,7 @@ PAGE = """<!doctype html>
 <img src="/stream" alt="camera stream">
 <div>
  <button onclick="act('/snap')">사진 저장</button>
- <button onclick="act('/reset')">정렬 초기화</button>
+ <button onclick="act('/reset')">정렬·평균 초기화</button>
  <span id="msg"></span>
 </div>
 <script>
@@ -385,7 +421,8 @@ def make_handler(view: CameraView):
 
 def main() -> None:
     p = argparse.ArgumentParser(description="로버 카메라 화면을 브라우저로 보기 (ArUco 확인)")
-    p.add_argument("--camera", type=int, default=0, help="카메라 번호 (기본 0 = /dev/video0)")
+    p.add_argument("--camera", type=int, default=0,
+                   help="카메라 번호 (UNO Q의 C270은 2 = /dev/video2, 노트북 웹캠은 보통 0)")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--target", type=int, default=0, help="목표 마커 번호 0~4 (기본 0)")
@@ -393,9 +430,14 @@ def main() -> None:
     p.add_argument("--host", default="0.0.0.0", help="기본: 같은 네트워크의 다른 기기에서 접속 가능")
     p.add_argument("--quality", type=int, default=70, help="JPEG 화질 1~100 (낮을수록 빠름)")
     p.add_argument("--snap-dir", type=Path, default=Path.home() / "qrover_snaps")
+    p.add_argument("--marker-mm", type=float, default=DEFAULT_MARKER_MM,
+                   help="마커 검은 부분 한 변 mm (흰 테두리 제외, 기본 100)")
+    p.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG,
+                   help="카메라 가로 화각(도). 카메라 보정 전 대략값 (기본 45)")
     args = p.parse_args()
 
-    cfg = ViewConfig(args.camera, args.width, args.height, args.target, args.quality, args.snap_dir)
+    cfg = ViewConfig(args.camera, args.width, args.height, args.target, args.quality, args.snap_dir,
+                     args.marker_mm, args.hfov)
     view = CameraView(cfg)
     view.start()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(view))
