@@ -155,7 +155,7 @@ class CameraViewIntegrationTests(unittest.TestCase):
         self.assertEqual(view.stage.finished_state, "ALIGNED")
 
     def test_frontal_marker_pose_shown(self):
-        # 정중앙 정면 마커 200px, 화각 45° → 초점거리 약 772px → 거리 약 386mm
+        # 정중앙 정면 마커(한 변 50mm)가 200px, 화각 45° → 초점거리 약 772px → 거리 약 193mm
         view, _ = self._run_view(marker_id=0, x=220)
         seq = -1
         for _ in range(3):
@@ -164,7 +164,7 @@ class CameraViewIntegrationTests(unittest.TestCase):
         pose = view.pose_estimator.estimate(
             type("M", (), {"corners": [(220, 140), (420, 140), (420, 340), (220, 340)]})(), 640, 480
         )
-        self.assertAlmostEqual(pose.wall_dist_mm, 386, delta=3)
+        self.assertAlmostEqual(pose.wall_dist_mm, 193, delta=2)
         self.assertAlmostEqual(pose.offset_mm, 0, delta=2)
         self.assertAlmostEqual(pose.yaw_deg, 0, delta=1)
 

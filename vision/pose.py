@@ -26,8 +26,8 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-# TODO: 실험으로 결정. 인쇄한 마커의 검은 부분 한 변 (흰 테두리 제외), #6에서 10cm로 결정
-DEFAULT_MARKER_MM = 100.0
+# 인쇄한 마커의 검은 부분 한 변 (흰 테두리 제외). 10cm(#6)에서 5cm로 변경 (2026-11-24)
+DEFAULT_MARKER_MM = 50.0
 # TODO: 카메라 보정으로 교체. Logitech C270 사양 대각 화각 55° → 4:3 화면 가로 약 45°
 DEFAULT_HFOV_DEG = 45.0
 # 이보다 재투영 오차가 크면 자세를 믿지 않는다 (꼭짓점이 잘못 잡힌 경우 등)

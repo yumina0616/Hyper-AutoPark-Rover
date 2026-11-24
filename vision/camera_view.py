@@ -7,7 +7,7 @@ UNO Q에서 실행하면 카메라 영상 위에 인식 결과와 숫자를 그�
 실행 (UNO Q에 SSH 접속 후, 레포 최상위 폴더에서):
     python3 -m vision.camera_view --camera 2          # UNO Q의 C270은 /dev/video2, 목표 마커 0번
     python3 -m vision.camera_view --camera 2 --target 3
-    python3 -m vision.camera_view --camera 2 --hfov 45 --marker-mm 100
+    python3 -m vision.camera_view --camera 2 --hfov 45 --marker-mm 50
     (노트북 웹캠은 --camera 0)
 
 화면에 보이는 것
@@ -431,7 +431,7 @@ def main() -> None:
     p.add_argument("--quality", type=int, default=70, help="JPEG 화질 1~100 (낮을수록 빠름)")
     p.add_argument("--snap-dir", type=Path, default=Path.home() / "qrover_snaps")
     p.add_argument("--marker-mm", type=float, default=DEFAULT_MARKER_MM,
-                   help="마커 검은 부분 한 변 mm (흰 테두리 제외, 기본 100)")
+                   help="마커 검은 부분 한 변 mm (흰 테두리 제외, 기본 50)")
     p.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG,
                    help="카메라 가로 화각(도). 카메라 보정 전 대략값 (기본 45)")
     args = p.parse_args()
