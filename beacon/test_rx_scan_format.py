@@ -74,7 +74,9 @@ class RxScanFilterTest(unittest.TestCase):
 class FormatCompatibilityTest(unittest.TestCase):
     def test_relay_client_reads_rx_scan_line(self):
         line = run_callback(Adv(ibeacon(major=3), rssi=-67))
-        self.assertEqual(client_parse(line), (3, -67.0))
+        sample = client_parse(line)
+        self.assertEqual((sample.slot_id, sample.rssi), (3, -67.0))
+        self.assertIsInstance(sample.t, float)
 
     def test_peak_monitor_reads_rx_scan_line(self):
         line = run_callback(Adv(ibeacon(major=2), rssi=-55))

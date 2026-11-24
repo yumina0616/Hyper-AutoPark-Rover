@@ -47,6 +47,8 @@ link = BridgeLink(notify=Bridge.notify)
 
 # 이 문자열이 스케치의 Bridge.notify("distance", ...)와 정확히 같아야 한다
 Bridge.provide("distance", link.on_distance)
+# MCU가 실제 명령을 통과/차단했는지 Python 상태 기계에 알려준다
+Bridge.provide("safety", link.on_safety)
 
 beacon = None
 if MODE == "beacon_search":
@@ -75,6 +77,12 @@ if MODE == "autopark":
         poll_rssi=rssi_client.poll,
         log=lambda m: print(m, flush=True),
     )
+    # 향후 버튼/웹 UI가 이 이름으로 시작·취소·초기화·목표칸 변경을 요청할 수 있다.
+    Bridge.provide("autopark_start", lambda: autopark.start())
+    Bridge.provide("autopark_cancel", lambda: autopark.cancel())
+    Bridge.provide("autopark_reset", lambda: autopark.reset())
+    Bridge.provide("autopark_target", lambda slot: autopark.set_target_slot(int(slot)))
+    Bridge.provide("autopark_status", lambda: autopark.status())
 
 seq_start = None
 last_print = 0.0

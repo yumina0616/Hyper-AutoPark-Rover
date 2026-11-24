@@ -31,7 +31,15 @@ class BeaconMode:
 
         allowed: False면 출발하지 않는다 (예: BridgeLink 시작 대기 3초 동안).
         """
-        target_rssi = [rssi for slot, rssi in self.poll_rssi() if slot == self.target_slot]
+        target_rssi = []
+        for sample in self.poll_rssi():
+            if hasattr(sample, "slot_id"):
+                slot, rssi, measured_t = sample.slot_id, sample.rssi, sample.t
+            else:
+                slot, rssi = sample
+                measured_t = now  # 기존 테스트/호출자 호환
+            if slot == self.target_slot:
+                target_rssi.append((measured_t, rssi))
 
         if not self.started:
             if allowed and target_rssi:
@@ -41,8 +49,8 @@ class BeaconMode:
             else:
                 return 0, 0
 
-        for rssi in target_rssi:
-            self.search.on_rssi(now, rssi)
+        for measured_t, rssi in target_rssi:
+            self.search.on_rssi(measured_t, rssi)
 
         out = self.search.step(now)
         if out.phase != self._last_phase:

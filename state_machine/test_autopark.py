@@ -4,7 +4,14 @@ import unittest
 from dataclasses import dataclass
 
 from beacon.peak_detector import PeakConfig, PeakDetector
-from state_machine.autopark import AutoParkController, AutoParkPhase
+from state_machine.autopark import (
+    SAFETY_EMERGENCY,
+    SAFETY_PASS,
+    AutoParkController,
+    AutoParkPhase,
+    RssiObservation,
+    SafetyObservation,
+)
 from state_machine.beacon_search import BeaconSearch, SearchConfig
 from state_machine.front_parking import (
     DistanceObservation,
@@ -39,6 +46,24 @@ def frame(
 
 def distance(t: float, mm: int = 500) -> DistanceObservation:
     return DistanceObservation(dist_mm=mm, status=RANGE_OK, t=t)
+
+
+def safety(t: float, reason: int = SAFETY_PASS) -> SafetyObservation:
+    return SafetyObservation(reason=reason, t=t)
+
+
+def run_step(ctrl: AutoParkController, t: float, distance_obs=None, **kwargs):
+    return ctrl.step(
+        t,
+        distance=distance_obs or distance(t),
+        safety=safety(t),
+        **kwargs,
+    )
+
+
+def ready(ctrl: AutoParkController, t: float = 0.0) -> None:
+    out = run_step(ctrl, t)
+    assert out.phase == AutoParkPhase.BEACON_SEARCH
 
 
 def make_controller(search_timeout: float = 5.0) -> AutoParkController:
@@ -88,46 +113,106 @@ class AutoParkFlowTest(unittest.TestCase):
         ctrl = make_controller()
         self.assertEqual(ctrl.step(0.0, target_rssi=[-70], allowed=False).left, 0)
         self.assertFalse(ctrl.beacon_started)
-        self.assertEqual(ctrl.step(0.1, target_rssi=[]).detail, "목표 비콘 신호 대기")
+        self.assertEqual(ctrl.step(0.1, allowed=True).detail, "거리 센서 첫 측정 대기")
+        ready(ctrl, 0.2)
+        self.assertEqual(run_step(ctrl, 0.3, target_rssi=[]).detail, "목표 비콘 신호 대기")
         self.assertFalse(ctrl.beacon_started)
+
+    def test_sensor_ready_timeout_aborts_without_first_reading(self) -> None:
+        ctrl = make_controller()
+        ctrl.cfg.sensor_ready_timeout_sec = 0.5
+        ctrl.step(0.0, allowed=True)
+        out = ctrl.step(0.6, allowed=True)
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("준비 시간 초과", out.reason)
+
+    def test_beacon_first_signal_timeout_aborts(self) -> None:
+        ctrl = make_controller()
+        ctrl.cfg.beacon_wait_timeout_sec = 0.5
+        ready(ctrl)
+        out = run_step(ctrl, 0.6)
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("첫 신호", out.reason)
+
+    def test_mcu_emergency_feedback_aborts(self) -> None:
+        ctrl = make_controller()
+        ready(ctrl)
+        out = ctrl.step(
+            0.1,
+            distance=distance(0.1),
+            safety=safety(0.1, SAFETY_EMERGENCY),
+        )
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("비상정지", out.reason)
+
+    def test_beacon_forward_motion_stops_for_obstacle(self) -> None:
+        ctrl = make_controller()
+        ready(ctrl)
+        out = run_step(
+            ctrl,
+            0.1,
+            target_rssi=[RssiObservation(0.1, -80)],
+            distance_obs=distance(0.1, ctrl.cfg.beacon_obstacle_stop_mm),
+        )
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("장애물", out.reason)
+
+    def test_beacon_uses_original_rssi_measurement_time(self) -> None:
+        ctrl = make_controller()
+        ready(ctrl)
+        run_step(ctrl, 1.0, target_rssi=[RssiObservation(0.9, -80)])
+        self.assertEqual(ctrl.beacon_search.detector.last_t, 0.9)
+
+    def test_future_rssi_timestamp_aborts(self) -> None:
+        ctrl = make_controller()
+        ready(ctrl)
+        out = run_step(ctrl, 1.0, target_rssi=[RssiObservation(2.0, -80)])
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("미래", out.reason)
 
     def test_full_flow_reaches_parked(self) -> None:
         ctrl = make_controller()
+        ready(ctrl)
 
         # 비콘에 접근하고 지나친 뒤 최댓값 지점으로 복귀한다.
-        self.assertGreater(ctrl.step(0.00, target_rssi=[-80]).left, 0)
-        ctrl.step(0.10, target_rssi=[-60])
-        ctrl.step(0.20, target_rssi=[-64])
-        returning = ctrl.step(0.31, target_rssi=[-64])
+        self.assertGreater(
+            run_step(ctrl, 0.01, target_rssi=[RssiObservation(0.01, -80)]).left,
+            0,
+        )
+        run_step(ctrl, 0.10, target_rssi=[RssiObservation(0.10, -60)])
+        run_step(ctrl, 0.20, target_rssi=[RssiObservation(0.20, -64)])
+        returning = run_step(ctrl, 0.31, target_rssi=[RssiObservation(0.31, -64)])
         self.assertLess(returning.left, 0)
-        aligned_entry = ctrl.step(0.60)
+        aligned_entry = run_step(ctrl, 0.60)
         self.assertEqual(aligned_entry.phase, AutoParkPhase.ARUCO_ALIGN)
         self.assertEqual((aligned_entry.left, aligned_entry.right), (0, 0))
 
         # 마커가 없으면 왼쪽으로 천천히 탐색 회전한다.
-        searching = ctrl.step(0.61, marker_frame=frame(1, 0.61))
+        searching = run_step(ctrl, 0.61, marker_frame=frame(1, 0.61))
         self.assertEqual(searching.detail, "SEARCHING")
         self.assertEqual((searching.left, searching.right), (-60, 60))
 
         # 마커를 발견해 두 개의 서로 다른 중앙 프레임으로 정렬을 확정한다.
-        turning = ctrl.step(0.70, marker_frame=frame(2, 0.70, err_x=0.5))
+        turning = run_step(ctrl, 0.70, marker_frame=frame(2, 0.70, err_x=0.5))
         self.assertEqual(turning.detail, "TURNING")
-        ctrl.step(0.80, marker_frame=frame(3, 0.80, err_x=0.01))
-        parking_entry = ctrl.step(0.90, marker_frame=frame(4, 0.90, err_x=0.01))
+        run_step(ctrl, 0.80, marker_frame=frame(3, 0.80, err_x=0.01))
+        parking_entry = run_step(ctrl, 0.90, marker_frame=frame(4, 0.90, err_x=0.01))
         self.assertEqual(parking_entry.phase, AutoParkPhase.FRONT_PARK)
         self.assertEqual((parking_entry.left, parking_entry.right), (0, 0))
 
         # 마커 크기 + 중앙 + ToF 조건이 새 측정 2회 연속 맞으면 완료한다.
-        first = ctrl.step(
+        first = run_step(
+            ctrl,
             1.00,
             marker_frame=frame(5, 1.00, err_x=0.0, size_px=145.0),
-            distance=distance(1.00, 140),
+            distance_obs=distance(1.00, 140),
         )
         self.assertEqual((first.left, first.right), (0, 0))
-        parked = ctrl.step(
+        parked = run_step(
+            ctrl,
             1.10,
             marker_frame=frame(6, 1.10, err_x=0.0, size_px=145.0),
-            distance=distance(1.10, 140),
+            distance_obs=distance(1.10, 140),
         )
         self.assertEqual(parked.phase, AutoParkPhase.PARKED)
         self.assertTrue(ctrl.terminal)
@@ -135,8 +220,9 @@ class AutoParkFlowTest(unittest.TestCase):
 
     def test_beacon_abort_never_starts_camera_alignment(self) -> None:
         ctrl = make_controller(search_timeout=0.1)
-        ctrl.step(0.0, target_rssi=[-80])
-        out = ctrl.step(0.2)
+        ready(ctrl)
+        run_step(ctrl, 0.01, target_rssi=[-80])
+        out = run_step(ctrl, 0.2)
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("비콘 탐색 실패", out.reason)
         self.assertFalse(ctrl.align_stage.finished)
@@ -144,7 +230,7 @@ class AutoParkFlowTest(unittest.TestCase):
     def test_distance_error_aborts_from_beacon_phase(self) -> None:
         ctrl = make_controller()
         bad_distance = DistanceObservation(-1, RANGE_ERROR, t=0.0)
-        out = ctrl.step(0.0, target_rssi=[-80], distance=bad_distance)
+        out = ctrl.step(0.0, target_rssi=[-80], distance=bad_distance, safety=safety(0.0))
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("거리 센서", out.reason)
 
@@ -159,7 +245,7 @@ class AutoParkFlowTest(unittest.TestCase):
         ctrl = make_controller()
         ctrl.phase = AutoParkPhase.ARUCO_ALIGN
         ctrl.align_stage.reset(10.0)
-        out = ctrl.step(10.1, camera_error="USB camera unavailable")
+        out = run_step(ctrl, 10.1, camera_error="USB camera unavailable")
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertEqual((out.left, out.right), (0, 0))
 
@@ -167,14 +253,46 @@ class AutoParkFlowTest(unittest.TestCase):
         ctrl = make_controller()
         ctrl.phase = AutoParkPhase.ARUCO_ALIGN
         ctrl.align_stage.reset(10.0)
-        out = ctrl.step(
+        out = run_step(
+            ctrl,
             10.1,
             marker_frame=frame(1, 10.1, err_x=0.7),
-            distance=distance(10.1, 140),
+            distance_obs=distance(10.1, 140),
         )
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("가까워", out.reason)
         self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_front_approach_reacquires_lost_marker_once_when_far(self) -> None:
+        ctrl = make_controller()
+        ctrl.phase = AutoParkPhase.FRONT_PARK
+        ctrl._parking_started_at = 1.0
+        hold = run_step(ctrl, 1.0, marker_frame=frame(1, 1.0))
+        self.assertEqual(hold.detail, "접근 중 목표 마커 일시 유실")
+
+        retry = run_step(ctrl, 1.31, marker_frame=frame(2, 1.31))
+        self.assertEqual(retry.phase, AutoParkPhase.ARUCO_ALIGN)
+        self.assertIn("재탐색", retry.detail)
+        self.assertEqual(ctrl._parking_reacquire_attempts, 1)
+
+    def test_front_approach_does_not_turn_to_reacquire_near_wall(self) -> None:
+        ctrl = make_controller()
+        ctrl.phase = AutoParkPhase.FRONT_PARK
+        ctrl._parking_started_at = 1.0
+        run_step(
+            ctrl,
+            1.0,
+            marker_frame=frame(1, 1.0),
+            distance_obs=distance(1.0, 250),
+        )
+        out = run_step(
+            ctrl,
+            1.31,
+            marker_frame=frame(2, 1.31),
+            distance_obs=distance(1.31, 250),
+        )
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("재탐색 불가", out.reason)
 
 
 if __name__ == "__main__":

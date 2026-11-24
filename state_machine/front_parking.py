@@ -37,6 +37,9 @@ class FrontParkingConfig:
     drive_speed: int = 115               # 일반 접근 속도 (-255 ~ 255)
     slow_speed: int = 95                 # 근접 감속 속도
     align_speed: int = 90                # 제자리 정렬 회전 속도
+    approach_steer_kp: float = 0.5       # 접근 중 offset_px → 좌우 PWM 보정
+    approach_max_turn: int = 45          # 접근 중 보정 상한
+    pivot_offset_px: float = 120.0       # 이보다 크게 벗어나면 전진하지 않고 제자리 정렬
     marker_timeout_sec: float = 0.6      # 마커 미수신 허용 시간 (600ms)
     required_stop_samples: int = 3       # 정지 조건 연속 충족 횟수
     parking_timeout_sec: float = 20.0    # 마커를 처음 본 뒤 이 시간 안에 못 끝내면 안전 정지
@@ -177,7 +180,16 @@ class FrontParkingController:
             return StepOutput(0, 0, self.state, self.parking_samples)
 
         # 7. 중심 정렬(ALIGN) 또는 전진 접근(APPROACH) 명령 생성
-        if not centered:
+        slowdown = (
+            (tof_ok and distance.dist_mm <= self.cfg.slowdown_distance_mm)
+            or (marker.side_px >= self.cfg.marker_stop_side_px * 0.75)
+        )
+        speed = self.cfg.slow_speed if slowdown else self.cfg.drive_speed
+
+        if abs(marker.offset_px) > self.cfg.pivot_offset_px:
+            if tof_ok and distance.dist_mm <= self.cfg.slowdown_distance_mm:
+                self.state = ParkingState.SAFETY_STOP
+                return StepOutput(0, 0, self.state, 0)
             self.state = ParkingState.ALIGN
             if marker.offset_px > 0:
                 # 마커가 화면 오른쪽에 있음 -> 시계 방향(우회전)
@@ -187,9 +199,10 @@ class FrontParkingController:
                 return StepOutput(-self.cfg.align_speed, self.cfg.align_speed, self.state, 0)
 
         self.state = ParkingState.APPROACH
-        slowdown = (
-            (tof_ok and distance.dist_mm <= self.cfg.slowdown_distance_mm)
-            or (marker.side_px >= self.cfg.marker_stop_side_px * 0.75)
-        )
-        speed = self.cfg.slow_speed if slowdown else self.cfg.drive_speed
-        return StepOutput(speed, speed, self.state, 0)
+        turn = int(round(self.cfg.approach_steer_kp * marker.offset_px))
+        turn = max(-self.cfg.approach_max_turn, min(self.cfg.approach_max_turn, turn))
+        return StepOutput(_clamp_pwm(speed + turn), _clamp_pwm(speed - turn), self.state, 0)
+
+
+def _clamp_pwm(value: int) -> int:
+    return max(-255, min(255, int(value)))

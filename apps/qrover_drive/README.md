@@ -73,11 +73,13 @@ App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바
 
 `autopark` 모드는 아래 단계를 앱 재시작 없이 연속 실행합니다.
 
-1. 목표 비콘 RSSI 최댓값을 지나친 뒤 최댓값 위치로 복귀
-2. 마커가 없으면 저속 제자리 회전, 목표 ID를 찾으면 화면 중앙 정렬
-3. 중앙 정렬을 여러 새 프레임에서 확인한 뒤 전면 접근
-4. 중앙 정렬 + 마커 크기 + ToF 거리 조건을 3회 연속 확인하면 `PARKED`
-5. 비콘·카메라·거리 센서 오류나 각 단계 시간 초과 시 `ABORT`로 정지 유지
+1. 거리 센서와 MCU 안전 피드백이 정상인지 확인한 뒤 출발 허용
+2. 원래 측정 시각을 보존한 목표 비콘 RSSI로 최댓값 위치까지 복귀
+3. 다른 칸 ID는 지나치며 저속 회전하고, 목표 ID를 찾으면 화면 중앙 정렬
+4. 마커를 잠깐 놓치면 먼저 정지한 뒤 제한 시간 동안만 재탐색
+5. 전면 접근 중에는 좌우 PWM 차이로 정렬을 계속 보정
+6. 중앙 정렬 + 마커 크기 + ToF 거리 조건을 3회 연속 확인하면 `PARKED`
+7. MCU 안전 정지, 장애물, 센서 오류, 시간 초과 시 `ABORT`로 정지 유지
 
 실행 전 `python3 scripts/sync_app_modules.py`를 실행하고, `python/main.py`에서
 `MODE = "autopark"`, `TARGET_SLOT = 목표 칸 번호`로 설정합니다. 기본값은 안전을
@@ -87,12 +89,18 @@ App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바
 배선과 카메라 좌우 방향을 로버를 들어 올린 상태에서 확인한 뒤
 `AutoParkConfig.marker_search_direction`을 조정해야 합니다.
 
+`AutoParkRunner`에는 `start()`, `cancel()`, `reset()`, `set_target_slot()`,
+`status()` 제어 함수가 있습니다. App Lab Bridge에도 각각
+`autopark_start`, `autopark_cancel`, `autopark_reset`, `autopark_target`,
+`autopark_status` 이름으로 등록됩니다.
+
 ## Bridge 메시지
 
 | 이름 | 방향 | 값 | 주기 |
 |---|---|---|---|
 | `drive` | Python → MCU | `left`, `right` (-255 ~ 255, + = 앞으로) | 바뀔 때 + 0.3초마다 (heartbeat) |
 | `distance` | MCU → Python | `dist_mm`, `status` | 약 50ms마다 |
+| `safety` | MCU → Python | 실제 적용된 `SafetyReason` | 약 50ms마다 |
 
 거리 상태 코드: `0` 정상 / `1` 범위 밖(앞이 비어 있음) / `2` 오류(측정 실패·센서 없음)
 
@@ -110,10 +118,10 @@ App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바
 ## 실행
 
 1. App Lab에서 이 폴더를 앱으로 열고 Run
-2. 기본값은 **바퀴를 움직이지 않습니다** (`python/main.py`의 `RUN_TEST_SEQUENCE = False`). 로그에 거리값이 0.5초마다 찍히는지 확인합니다
+2. 기본값은 **바퀴를 움직이지 않습니다** (`python/main.py`의 `MODE = "idle"`). 로그에 거리값이 0.5초마다 찍히는지 확인합니다
 3. 바퀴 방향을 확인할 때만:
    - **로버를 들어서 바퀴가 바닥에 닿지 않게** 합니다
-   - `RUN_TEST_SEQUENCE = True`로 바꾸고 Run → 시작 대기 3초 후 전진 → 정지 → 후진 → 정지 → 시계 방향 회전 → 정지
+   - `MODE = "test_sequence"`로 바꾸고 Run → 시작 대기 3초 후 전진 → 정지 → 후진 → 정지 → 시계 방향 회전 → 정지
 
 App Lab이 레포 폴더를 바로 열 수 있는지는 아직 확인하지 않았습니다 (#1). 안 되면 App Lab 앱 폴더로 복사해서 실행합니다.
 
@@ -134,6 +142,7 @@ g++ -std=c++11 -I apps/qrover_drive/sketch apps/qrover_drive/tests/test_safety.c
 
 ## 확인 안 된 것
 
+- `autopark` 전체 흐름의 실제 로버 주행. 비콘·카메라·ToF 임계값과 회전 방향은 현장 반복 실험으로 보정해야 합니다
 - App Lab에서 여러 `.cpp/.h` 파일로 나뉜 스케치가 빌드되는지 (#1). 안 되면 `sketch.ino` 하나로 합칩니다
 - 실제 로버에서 방향, watchdog, 비상정지, 센서 선 뽑기 동작 (바퀴 들고 확인하는 별도 테스트)
 - VL53L0X `RangeStatus` 1~3(신호 약함 등)을 오류로 보고 정지하는데, 실제로 너무 자주 나와서 로버가 자꾸 멈추는지

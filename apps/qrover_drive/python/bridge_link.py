@@ -20,6 +20,13 @@ RANGE_OK = 0
 RANGE_OUT_OF_RANGE = 1
 RANGE_ERROR = 2
 
+# MCU safety.h의 SafetyReason과 같은 값
+SAFETY_PASS = 0
+SAFETY_NO_COMMAND = 1
+SAFETY_WATCHDOG = 2
+SAFETY_SENSOR_ERROR = 3
+SAFETY_EMERGENCY = 4
+
 
 @dataclass
 class LinkConfig:
@@ -34,6 +41,13 @@ class DistanceReading:
     status: int       # RANGE_OK / RANGE_OUT_OF_RANGE / RANGE_ERROR
     t: float          # Python이 받은 시각 (time.time())
     stale: bool       # 오래된 값인지 (지금 - t > stale_sec)
+
+
+@dataclass
+class SafetyReading:
+    reason: int       # SAFETY_PASS / NO_COMMAND / WATCHDOG / SENSOR_ERROR / EMERGENCY
+    t: float          # Python이 받은 시각
+    stale: bool
 
 
 class BridgeLink:
@@ -53,6 +67,7 @@ class BridgeLink:
         self._last_sent: Optional[tuple[int, int]] = None
         self._last_sent_t = 0.0
         self._distance: Optional[tuple[int, int, float]] = None  # (dist_mm, status, t)
+        self._safety: Optional[tuple[int, float]] = None          # (reason, t)
 
     # ── MCU → Python ──────────────────────────────────
     def on_distance(self, dist_mm: int, status: int) -> None:
@@ -66,6 +81,17 @@ class BridgeLink:
         dist_mm, status, t = self._distance
         stale = (self._clock() - t) > self.cfg.stale_sec
         return DistanceReading(dist_mm, status, t, stale)
+
+    def on_safety(self, reason: int) -> None:
+        """Bridge.provide("safety", link.on_safety)로 등록한다."""
+        self._safety = (int(reason), self._clock())
+
+    def latest_safety(self) -> Optional[SafetyReading]:
+        if self._safety is None:
+            return None
+        reason, t = self._safety
+        stale = (self._clock() - t) > self.cfg.stale_sec
+        return SafetyReading(reason, t, stale)
 
     # ── Python → MCU ──────────────────────────────────
     def send_drive(self, left: int, right: int) -> None:

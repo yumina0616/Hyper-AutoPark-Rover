@@ -47,6 +47,10 @@ class StageConfig:
     search_direction: str = "right"  # TODO: 후방 카메라/배선 실물 검증
     search_pwm: int = 60             # TODO: MIN_PWM 실측 후 조정
     search_sec: float = 5.0          # TODO: 회전 공간 및 속도 실험 후 조정
+    continue_on_wrong_marker: bool = False
+    reacquire_if_lost: bool = False
+    lost_stop_sec: float = 0.2       # 유실 직후에는 먼저 정지
+    reacquire_sec: float = 2.0       # 이후 제한 시간 동안만 재탐색 회전
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,12 @@ class ArucoAlignStage:
             raise ValueError("timeout_sec, frame_stale_sec는 양수여야 합니다")
         if self.cfg.search_direction not in ("left", "right"):
             raise ValueError("search_direction은 left/right만 가능합니다")
-        if not 0 <= self.cfg.search_pwm <= 255 or self.cfg.search_sec < 0:
+        if (
+            not 0 <= self.cfg.search_pwm <= 255
+            or self.cfg.search_sec < 0
+            or self.cfg.lost_stop_sec < 0
+            or self.cfg.reacquire_sec < 0
+        ):
             raise ValueError("search_pwm은 0~255, search_sec는 0 이상이어야 합니다")
         # 최소 PWM이 최대 PWM보다 크면 제어 이득을 바꿔도 사실상 일정한
         # 속도로만 회전한다. 실물 캘리브레이션 전에도 설정 모순은 막는다.
@@ -96,6 +105,8 @@ class ArucoAlignStage:
         self.last_seq: Optional[int] = None
         self.has_seen_target = False
         self.finished_state: Optional[str] = None
+        self._reacquire_started_at: Optional[float] = None
+        self._last_search_sign = 1 if self.cfg.search_direction == "right" else -1
         self._last = StageResult(*STOP, "WAITING_FOR_CAMERA")
         self.aligner.reset()
 
@@ -138,7 +149,19 @@ class ArucoAlignStage:
         target = next((m for m in observation.markers if m.id == self.target_id), None)
         if target is None:
             self.aligner.reset()
-            if observation.markers:
+            if self.has_seen_target and self.cfg.reacquire_if_lost:
+                if self._reacquire_started_at is None:
+                    self._reacquire_started_at = now
+                lost_for = now - self._reacquire_started_at
+                if lost_for < self.cfg.lost_stop_sec:
+                    self._last = StageResult(*STOP, "MARKER_LOST_HOLD", "목표 마커 일시 유실")
+                elif lost_for < self.cfg.lost_stop_sec + self.cfg.reacquire_sec:
+                    state = "REACQUIRING_WRONG_MARKER" if observation.markers else "REACQUIRING"
+                    pwm = self.cfg.search_pwm * self._last_search_sign
+                    self._last = StageResult(pwm, -pwm, state)
+                else:
+                    self._last = StageResult(*STOP, "MARKER_MISSING", "목표 마커 재탐색 실패")
+            elif observation.markers and not self.cfg.continue_on_wrong_marker:
                 # 다른 칸의 마커가 보인 상황에서는 자동 회전을 제안하지 않는다.
                 # 목표 ID가 틀릴 때에는 정지 우선 (AGENTS.md 6장).
                 self._last = StageResult(*STOP, "WRONG_MARKER", "목표 ID가 아닌 마커만 검출")
@@ -149,12 +172,18 @@ class ArucoAlignStage:
             ):
                 pwm = self.cfg.search_pwm
                 sign = 1 if self.cfg.search_direction == "right" else -1
-                self._last = StageResult(sign * pwm, -sign * pwm, "SEARCHING")
+                state = "SEARCHING_WRONG_MARKER" if observation.markers else "SEARCHING"
+                self._last = StageResult(sign * pwm, -sign * pwm, state)
             else:
                 self._last = StageResult(*STOP, "MARKER_MISSING", "목표 ID 검출 안 됨")
             return self._last
 
         self.has_seen_target = True
+        self._reacquire_started_at = None
+        if target.err_x > 0:
+            self._last_search_sign = 1
+        elif target.err_x < 0:
+            self._last_search_sign = -1
         r = self.aligner.step(target, self.target_id, now, mode="align")
         if r.status == AlignStatus.LOST:
             self.aligner.reset()
@@ -179,8 +208,15 @@ class ArucoCamera:
     있지 않거나 카메라 접근에 실패하면 error로 알린다(모터 제안 0).
     """
 
-    def __init__(self, camera_index: int = 0) -> None:
+    def __init__(
+        self,
+        camera_index: int = 0,
+        frame_width: int = 640,
+        frame_height: int = 480,
+    ) -> None:
         self.camera_index = camera_index
+        self.frame_width = frame_width
+        self.frame_height = frame_height
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -188,8 +224,11 @@ class ArucoCamera:
         self._error: Optional[str] = None
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None and self._thread.is_alive():
             return
+        self._stop = threading.Event()
+        self._frame = None
+        self._error = None
         self._thread = threading.Thread(target=self._read_loop, daemon=True, name="aruco-camera")
         self._thread.start()
 
@@ -201,6 +240,8 @@ class ArucoCamera:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=0.5)  # 블로킹 카메라 드라이버는 daemon 스레드로 남을 수 있음
+            if not self._thread.is_alive():
+                self._thread = None
 
     def _read_loop(self) -> None:
         cap = None
@@ -210,6 +251,9 @@ class ArucoCamera:
 
             detector = ArucoDetector()
             cap = cv2.VideoCapture(self.camera_index)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             if not cap.isOpened():
                 raise RuntimeError(f"카메라 {self.camera_index}을(를) 열 수 없음")
             seq = 0
