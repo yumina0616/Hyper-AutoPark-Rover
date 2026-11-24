@@ -5,9 +5,13 @@
 
 import unittest
 from dataclasses import dataclass
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import vision.aruco_auto_align as auto_align_module
 
 from vision.align import AlignConfig
-from vision.aruco_auto_align import ArucoAlignStage, MarkerFrame, StageConfig
+from vision.aruco_auto_align import ArucoAlignStage, ArucoCamera, MarkerFrame, StageConfig
 
 
 @dataclass(frozen=True)
@@ -157,5 +161,23 @@ class StageTests(unittest.TestCase):
         stage.step(frame(2, None, t=100.1), now=100.1)
         r = stage.step(frame(3, 0.01, t=100.2), now=100.2)
         self.assertEqual(r.state, "CENTERING_CHECK")
+
+
+class CameraBackendTests(unittest.TestCase):
+    def test_linux_opens_configured_index_with_v4l2(self):
+        capture = object()
+        fake_cv2 = SimpleNamespace(
+            CAP_V4L2=200,
+            VideoCapture=Mock(return_value=capture),
+        )
+        camera = ArucoCamera(camera_index=2)
+
+        with patch.object(auto_align_module.sys, "platform", "linux"):
+            opened = camera._open_capture(fake_cv2)
+
+        self.assertIs(opened, capture)
+        fake_cv2.VideoCapture.assert_called_once_with(2, fake_cv2.CAP_V4L2)
+
+
 if __name__ == "__main__":
     unittest.main()

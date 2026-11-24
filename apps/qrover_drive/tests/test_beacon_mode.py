@@ -27,7 +27,7 @@ from state_machine.test_beacon_search import CM_PER_PWM, rssi_at  # noqa: E402
 
 def rx_line(slot, rssi, t=None):
     """rx_scan.py와 같은 형식의 한 줄."""
-    measured = datetime.now() if t is None else datetime.fromtimestamp(t)
+    measured = datetime.now().astimezone() if t is None else datetime.fromtimestamp(t).astimezone()
     return f"{measured.isoformat(timespec='milliseconds')}, {slot}, {rssi}"
 
 
@@ -46,6 +46,11 @@ class RelayClientTest(unittest.TestCase):
         self.assertEqual(sample.t, datetime.fromisoformat("2026-11-16T18:30:01.125").timestamp())
         self.assertIsNone(parse_line("Starting BLE iBeacon Scanner..."))
         self.assertIsNone(parse_line("a, b, c"))
+
+    def test_timezone_offsets_represent_same_measurement_time(self):
+        kst = parse_line("2026-11-16T18:30:01.125+09:00, 1, -58")
+        utc = parse_line("2026-11-16T09:30:01.125+00:00, 1, -58")
+        self.assertEqual(kst.t, utc.t)
 
     def test_relay_to_client_over_tcp(self):
         relay = Relay(port=0, host="127.0.0.1")

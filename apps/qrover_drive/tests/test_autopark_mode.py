@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -74,6 +75,22 @@ class FakeLink:
 
 
 class AutoParkRunnerTest(unittest.TestCase):
+    def test_builds_camera_with_configured_index(self):
+        with patch("autopark_mode.ArucoCamera") as camera_cls:
+            runner = AutoParkRunner(
+                target_slot=2,
+                poll_rssi=lambda: [],
+                camera_index=2,
+                log=lambda _: None,
+            )
+
+        camera_cls.assert_called_once_with(camera_index=2)
+        self.assertIs(runner.camera, camera_cls.return_value)
+
+    def test_requires_camera_configuration(self):
+        with self.assertRaises(ValueError):
+            AutoParkRunner(target_slot=0, poll_rssi=lambda: [], log=lambda _: None)
+
     def test_filters_target_rssi_and_sends_single_command(self):
         camera = FakeCamera()
         controller = FakeController()

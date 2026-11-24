@@ -50,7 +50,9 @@ def detection_callback(device, advertisement_data):
     if not (0 <= slot_id <= 4) or minor != EXPECTED_MINOR:
         return
 
-    t_recv = datetime.now().isoformat(timespec="milliseconds")
+    # 보드와 App Lab 컨테이너의 로컬 시간대가 달라도 같은 epoch로 해석되도록
+    # UTC 오프셋(+09:00 등)을 출력에 포함한다.
+    t_recv = datetime.now().astimezone().isoformat(timespec="milliseconds")
     rssi = advertisement_data.rssi
     print(f"{t_recv}, {slot_id}, {rssi}", flush=True)
 

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -243,6 +244,12 @@ class ArucoCamera:
             if not self._thread.is_alive():
                 self._thread = None
 
+    def _open_capture(self, cv2):
+        """Linux에서는 일반 장치 자동 탐색 대신 V4L2 장치를 직접 연다."""
+        if sys.platform.startswith("linux"):
+            return cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
+        return cv2.VideoCapture(self.camera_index)
+
     def _read_loop(self) -> None:
         cap = None
         try:
@@ -250,7 +257,7 @@ class ArucoCamera:
             from vision.aruco import ArucoDetector
 
             detector = ArucoDetector()
-            cap = cv2.VideoCapture(self.camera_index)
+            cap = self._open_capture(cv2)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

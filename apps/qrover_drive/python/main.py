@@ -16,7 +16,7 @@ beacon_search 모드 준비 (UNO Q):
 
 front_parking 모드 준비 (UNO Q):
     1) python scripts/sync_app_modules.py      (공용 모듈을 앱 폴더로 복사, 레포 최상위에서)
-    2) Logitech C270 카메라 연결 확인 (/dev/video0) 후 MODE = "front_parking" 으로 변경하여 실행
+    2) Logitech C270 카메라 연결 확인 (/dev/video2) 후 MODE = "front_parking" 으로 변경하여 실행
 """
 
 import time
@@ -30,6 +30,9 @@ MODE = "idle"
 
 # beacon_search / front_parking / autopark: 목표 칸 번호 (0~4). 나중에 웹 화면에서 선택하도록 바꿈 (#7)
 TARGET_SLOT = 0
+
+# UNO Q에서 Logitech C270은 /dev/video2. video0·1은 qcom-venus 코덱 장치다.
+CAMERA_INDEX = 2
 
 # test_sequence: (초, 왼쪽, 오른쪽, 설명) — 시작 대기 3초 뒤 순서대로 실행하고, 끝나면 정지
 TEST_SEQUENCE = [
@@ -64,7 +67,10 @@ front_parking = None
 if MODE == "front_parking":
     from front_parking_mode import FrontParkingRunner
 
-    front_parking = FrontParkingRunner(target_marker_id=TARGET_SLOT)
+    front_parking = FrontParkingRunner(
+        target_marker_id=TARGET_SLOT,
+        camera_index=CAMERA_INDEX,
+    )
 
 autopark = None
 if MODE == "autopark":
@@ -75,6 +81,7 @@ if MODE == "autopark":
     autopark = AutoParkRunner(
         target_slot=TARGET_SLOT,
         poll_rssi=rssi_client.poll,
+        camera_index=CAMERA_INDEX,
         log=lambda m: print(m, flush=True),
     )
     # 향후 버튼/웹 UI가 이 이름으로 시작·취소·초기화·목표칸 변경을 요청할 수 있다.

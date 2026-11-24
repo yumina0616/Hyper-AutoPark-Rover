@@ -36,11 +36,18 @@ class AutoParkRunner:
         log: Callable[[str], None] = print,
         on_status: Optional[Callable[[AutoParkOutput], None]] = None,
         auto_start: bool = True,
+        camera_index: Optional[int] = None,
     ) -> None:
         self.target_slot = int(target_slot)
         self.poll_rssi = poll_rssi
         self.controller = controller or AutoParkController(self.target_slot)
-        self.camera = camera or ArucoCamera(camera_index=0)
+        if camera is None and camera_index is None:
+            raise ValueError("camera 또는 camera_index를 지정해야 합니다")
+        self.camera = (
+            camera
+            if camera is not None
+            else ArucoCamera(camera_index=int(camera_index))
+        )
         self.log = log
         self.on_status = on_status
         self._enabled = auto_start

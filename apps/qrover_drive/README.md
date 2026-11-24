@@ -82,8 +82,9 @@ App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바
 7. MCU 안전 정지, 장애물, 센서 오류, 시간 초과 시 `ABORT`로 정지 유지
 
 실행 전 `python3 scripts/sync_app_modules.py`를 실행하고, `python/main.py`에서
-`MODE = "autopark"`, `TARGET_SLOT = 목표 칸 번호`로 설정합니다. 기본값은 안전을
-위해 계속 `idle`입니다.
+`MODE = "autopark"`, `TARGET_SLOT = 목표 칸 번호`, `CAMERA_INDEX = 카메라 번호`로
+설정합니다. UNO Q의 C270은 `/dev/video2`이므로 기본 설정은 `2`이며, 기본 모드는
+안전을 위해 계속 `idle`입니다.
 
 현재 자동 탐색 회전의 기본 방향은 **왼쪽 전면 주차 배치** 기준입니다. 실제 모터
 배선과 카메라 좌우 방향을 로버를 들어 올린 상태에서 확인한 뒤
