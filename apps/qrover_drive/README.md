@@ -19,11 +19,12 @@ qrover_drive/
 │   ├── motor.*            바퀴 구동, 출발 보정
 │   └── sketch.yaml        라이브러리 목록
 ├── python/                MPU (Python)
-│   ├── main.py            MODE로 동작 선택: idle / test_sequence / beacon_search
+│   ├── main.py            MODE로 동작 선택: 개별 시험 / 전체 자동주차
 │   ├── bridge_link.py     Bridge 송수신, heartbeat, 시작 대기, 오래된 값 판단
 │   ├── beacon_mode.py     비콘 탐색(1단계)을 Bridge 주행과 연결
+│   ├── autopark_mode.py   비콘 → ArUco → 전면 주차 전체 실행기
 │   ├── rssi_client.py     RSSI 중계기에 접속해서 RSSI 받기
-│   └── beacon/, state_machine/   ← scripts/sync_app_modules.py가 복사 (커밋 안 됨)
+│   └── beacon/, state_machine/, vision/   ← scripts/sync_app_modules.py가 복사 (커밋 안 됨)
 └── tests/                 노트북에서 돌리는 테스트
     ├── test_bridge_link.py
     ├── test_beacon_mode.py
@@ -68,6 +69,24 @@ App Lab 앱 안에서는 블루투스를 쓸 수 없어서, 비콘 수신은 바
 
 `motor`, `sensor`, `config`는 [`apps/qrover_obstacle_avoidance`](../qrover_obstacle_avoidance) (#17)에서 가져와 고쳤습니다.
 
+## 전체 자동주차 (`MODE = "autopark"`)
+
+`autopark` 모드는 아래 단계를 앱 재시작 없이 연속 실행합니다.
+
+1. 목표 비콘 RSSI 최댓값을 지나친 뒤 최댓값 위치로 복귀
+2. 마커가 없으면 저속 제자리 회전, 목표 ID를 찾으면 화면 중앙 정렬
+3. 중앙 정렬을 여러 새 프레임에서 확인한 뒤 전면 접근
+4. 중앙 정렬 + 마커 크기 + ToF 거리 조건을 3회 연속 확인하면 `PARKED`
+5. 비콘·카메라·거리 센서 오류나 각 단계 시간 초과 시 `ABORT`로 정지 유지
+
+실행 전 `python3 scripts/sync_app_modules.py`를 실행하고, `python/main.py`에서
+`MODE = "autopark"`, `TARGET_SLOT = 목표 칸 번호`로 설정합니다. 기본값은 안전을
+위해 계속 `idle`입니다.
+
+현재 자동 탐색 회전의 기본 방향은 **왼쪽 전면 주차 배치** 기준입니다. 실제 모터
+배선과 카메라 좌우 방향을 로버를 들어 올린 상태에서 확인한 뒤
+`AutoParkConfig.marker_search_direction`을 조정해야 합니다.
+
 ## Bridge 메시지
 
 | 이름 | 방향 | 값 | 주기 |
@@ -102,6 +121,11 @@ App Lab이 레포 폴더를 바로 열 수 있는지는 아직 확인하지 않�
 
 ```bash
 python -m pytest apps/qrover_drive/tests/test_bridge_link.py
+```
+
+```bash
+python -m unittest state_machine.test_autopark -v
+python apps/qrover_drive/tests/test_autopark_mode.py
 ```
 
 ```bash

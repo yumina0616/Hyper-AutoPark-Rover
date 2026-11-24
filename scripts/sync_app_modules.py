@@ -20,10 +20,13 @@ APPS = {
         "beacon/__init__.py",
         "beacon/peak_detector.py",
         "state_machine/__init__.py",
+        "state_machine/autopark.py",
         "state_machine/beacon_search.py",
         "state_machine/front_parking.py",
         "vision/__init__.py",
+        "vision/align.py",
         "vision/aruco.py",
+        "vision/aruco_auto_align.py",
     ],
 }
 

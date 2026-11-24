@@ -115,15 +115,40 @@ class TestFrontParkingController(unittest.TestCase):
         self.assertEqual(out.state, ParkingState.SAFETY_STOP)
         self.assertEqual((out.left, out.right), (0, 0))
 
-    def test_tof_close_and_vision_close_with_offset_realigns_instead_of_latching(self) -> None:
-        # ToF 150mm 이내 + 마커 크기 충족 상태에서 중심 오차만 45px 넘으면 ALIGN으로 재정렬
+    def test_tof_close_and_vision_close_with_offset_stops_instead_of_turning(self) -> None:
+        # 벽 가까이에서는 제자리 회전 중 모서리가 닿을 수 있으므로 안전 정지
         out = self.ctrl.update(
             MarkerObservation(0, side_px=145.0, offset_px=55.0, t=1.0),
             DistanceObservation(dist_mm=140, status=RANGE_OK, t=1.0),
             now=1.0,
         )
-        self.assertEqual(out.state, ParkingState.ALIGN)
-        self.assertEqual((out.left, out.right), (self.cfg.align_speed, -self.cfg.align_speed))
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_large_marker_with_invalid_tof_stops(self) -> None:
+        # 영상은 이미 가깝다고 하는데 ToF가 유효하지 않으면 더 전진하지 않는다
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=145.0, offset_px=0.0, t=1.0),
+            DistanceObservation(dist_mm=-1, status=RANGE_OUT_OF_RANGE, t=1.0),
+            now=1.0,
+        )
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_parking_timeout_stops(self) -> None:
+        self.cfg.parking_timeout_sec = 1.0
+        self.ctrl.update(
+            MarkerObservation(0, side_px=80.0, offset_px=0.0, t=1.0),
+            DistanceObservation(dist_mm=500, status=RANGE_OK, t=1.0),
+            now=1.0,
+        )
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=90.0, offset_px=0.0, t=2.1),
+            DistanceObservation(dist_mm=450, status=RANGE_OK, t=2.1),
+            now=2.1,
+        )
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
 
 
 if __name__ == "__main__":
