@@ -21,6 +21,8 @@ UNO Q에서 실행하면 카메라 영상 위에 인식 결과와 숫자를 그�
         offset 칸 중심선에서 옆으로 벗어난 거리 mm (+ = 카메라가 오른쪽)
         yaw    칸 방향과 로버 정면의 각도 차 (+ = 오른쪽으로 돌아야 똑바름)
       화각(--hfov)으로 계산한 대략값이다. 카메라 보정 전에는 dist가 몇 % 틀릴 수 있다.
+    - tilt: 평균 yaw로 기울기 판정. ±--tilt-tol(기본 3°) 안이면 STRAIGHT(똑바름),
+      넘으면 어느 쪽으로 돌아야 똑바른지 (turn RIGHT / turn LEFT)
 
 브라우저 버튼
     - 사진 저장: 지금 화면을 보드의 --snap-dir 폴더에 저장 (기본 ~/qrover_snaps)
@@ -99,6 +101,21 @@ def pose_line(label: str, pose: Optional[Pose]) -> str:
     )
 
 
+# TODO: 실험으로 결정. 칸 안에서 벽에 닿지 않는 최대 각도 (로버 폭·길이로 계산)
+DEFAULT_TILT_TOL_DEG = 3.0
+
+
+def tilt_line(pose: Optional[Pose], tol_deg: float = DEFAULT_TILT_TOL_DEG) -> str:
+    """로버가 칸(벽)에 대해 기울어졌는지 한눈에 보이게 판정한다 (평균 자세 사용 권장)."""
+    if pose is None:
+        return "tilt: n/a (no target marker)"
+    yaw = pose.yaw_deg
+    if abs(yaw) <= tol_deg:
+        return f"tilt: STRAIGHT  ({yaw:+.1f}deg, tol +-{tol_deg:g})"
+    side = "RIGHT" if yaw > 0 else "LEFT"
+    return f"tilt: {yaw:+.1f}deg -> turn {side} to straighten (tol +-{tol_deg:g})"
+
+
 def status_lines(
     fps: float,
     detect_ms: float,
@@ -109,6 +126,7 @@ def status_lines(
     stage: StageResult,
     pose_now: Optional[Pose] = None,
     pose_avg: Optional[Pose] = None,
+    tilt_tol_deg: float = DEFAULT_TILT_TOL_DEG,
 ) -> list[str]:
     """화면 위에 그릴 줄 목록. 목표 마커를 맨 위에 둔다."""
     lines = [
@@ -116,6 +134,7 @@ def status_lines(
         stage_line(stage),
         pose_line("now", pose_now),
         pose_line("avg", pose_avg),
+        tilt_line(pose_avg, tilt_tol_deg),
     ]
     ordered = sorted(markers, key=lambda m: (m.id != target_id, m.id))
     if ordered:
@@ -140,6 +159,7 @@ class ViewConfig:
     snap_dir: Path = Path.home() / "qrover_snaps"
     marker_mm: float = DEFAULT_MARKER_MM
     hfov_deg: float = DEFAULT_HFOV_DEG
+    tilt_tol_deg: float = DEFAULT_TILT_TOL_DEG
 
 
 class CameraView:
@@ -263,7 +283,7 @@ class CameraView:
                 else:
                     pose_avg = self.pose_avg.add(pose_now)
                 lines = status_lines(meter.fps, detect_ms, w, h, self.cfg.target_id, markers,
-                                     result, pose_now, pose_avg)
+                                     result, pose_now, pose_avg, self.cfg.tilt_tol_deg)
                 self._draw(cv2, frame, markers, lines)
 
                 ok, buf = cv2.imencode(
@@ -434,10 +454,12 @@ def main() -> None:
                    help="마커 검은 부분 한 변 mm (흰 테두리 제외, 기본 50)")
     p.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG,
                    help="카메라 가로 화각(도). 카메라 보정 전 대략값 (기본 45)")
+    p.add_argument("--tilt-tol", type=float, default=DEFAULT_TILT_TOL_DEG,
+                   help="이 각도(도) 안이면 똑바름으로 표시 (기본 3)")
     args = p.parse_args()
 
     cfg = ViewConfig(args.camera, args.width, args.height, args.target, args.quality, args.snap_dir,
-                     args.marker_mm, args.hfov)
+                     args.marker_mm, args.hfov, args.tilt_tol)
     view = CameraView(cfg)
     view.start()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(view))

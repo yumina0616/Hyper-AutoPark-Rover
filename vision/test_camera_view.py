@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 
 from vision.aruco_auto_align import StageResult
-from vision.camera_view import FpsMeter, marker_line, pose_line, stage_line, status_lines
+from vision.camera_view import (
+    FpsMeter,
+    marker_line,
+    pose_line,
+    stage_line,
+    status_lines,
+    tilt_line,
+)
 from vision.pose import Pose, PoseAverager
 
 try:
@@ -76,13 +83,21 @@ class TextTests(unittest.TestCase):
         self.assertIn("target ID 1", lines[0])
         self.assertTrue(lines[2].startswith("pose now"))
         self.assertTrue(lines[3].startswith("pose avg"))
-        self.assertTrue(lines[4].startswith("ID 1"))
-        self.assertTrue(lines[5].startswith("ID 3"))
+        self.assertTrue(lines[4].startswith("tilt"))
+        self.assertTrue(lines[5].startswith("ID 1"))
+        self.assertTrue(lines[6].startswith("ID 3"))
 
     def test_pose_line(self):
         self.assertEqual(pose_line("now", None), "pose now: n/a")
         text = pose_line("avg", Pose(412.4, -23.6, 4.25, 1.0))
         self.assertEqual(text, "pose avg: dist   412mm  offset   -24mm  yaw  +4.2deg")
+
+    def test_tilt_line(self):
+        self.assertEqual(tilt_line(None), "tilt: n/a (no target marker)")
+        self.assertIn("STRAIGHT", tilt_line(Pose(300, 0, 2.5, 0), 3))
+        self.assertIn("turn RIGHT", tilt_line(Pose(300, 0, 7.7, 0), 3))
+        self.assertIn("turn LEFT", tilt_line(Pose(300, 0, -4.0, 0), 3))
+        self.assertIn("STRAIGHT", tilt_line(Pose(300, 0, -4.0, 0), 5))
 
     def test_pose_averager(self):
         avg = PoseAverager(2)
