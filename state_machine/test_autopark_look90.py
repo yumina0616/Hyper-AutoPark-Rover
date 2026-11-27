@@ -69,6 +69,17 @@ class TurnInTest(unittest.TestCase):
         self.assertEqual(ctrl._after_plan_stage, "LOOK")
 
 
+class ApproachLateralToleranceTest(unittest.TestCase):
+    def test_approaches_up_to_50mm_and_realigns_beyond_it(self):
+        for offset, phase in ((-50, AutoParkPhase.FRONT_PARK),
+                              (50, AutoParkPhase.FRONT_PARK),
+                              (51, AutoParkPhase.REALIGN)):
+            with self.subTest(offset=offset):
+                ctrl = look_ctrl()
+                ctrl._look_obs = [(0, 80, 0, offset)] * ctrl.cfg.look_min_frames
+                self.assertEqual(ctrl._decide_look(12.0).phase, phase)
+
+
 class WallDistanceCheckTest(unittest.TestCase):
     def test_compares_same_marker_after_a_complete_move(self):
         ctrl = look_ctrl()

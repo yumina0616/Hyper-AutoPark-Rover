@@ -120,6 +120,7 @@ class AutoParkConfig:
     look_frame_wait_sec: float = 3.0            # 보는 동안 새 영상이 하나도 없으면 이만큼 더 기다리고 중단
     look_frame_max_age_sec: float = 1.0         # 이보다 오래된 영상은 안 본 것으로 친다
     wall_yaw_tol_deg: float = 6.0               # 벽과 이 이상 틀어지면 조금 돌아서 바로잡음
+    approach_lateral_tol_mm: float = 50.0      # 전면 주차 접근을 시작할 때 허용하는 옆 오차
     max_yaw_fixes: int = 5                      # 벽을 볼 때 한 번씩 돌고 확인하는 최대 횟수
     max_look_moves: int = 6                     # 앞뒤로 옮겨서 다시 보기 최대 횟수
     peek_pulses: int = 3                        # 아무것도 안 보이면 좌우로 이만큼(약 15°) 돌아서 더 본다
@@ -689,7 +690,6 @@ class AutoParkController:
     def _decide_look(self, now: float) -> AutoParkOutput:
         obs = self._look_obs
         yaws = self._look_yaws
-        pcfg = self.parking_controller.cfg
 
         # 1) 벽과 틀어졌으면 (어느 마커든 벽은 같은 면) 조금 돌아서 바로잡는다
         if len(yaws) >= self.cfg.look_min_frames:
@@ -714,7 +714,7 @@ class AutoParkController:
                 self.last_look = "목표 마커 보임 (자세 정보 부족) → 접근"
                 return self._start_front_park(now, self.last_look)
             lat = sum(tgt_lats) / len(tgt_lats)
-            if abs(lat) <= pcfg.lateral_tol_mm:
+            if abs(lat) <= self.cfg.approach_lateral_tol_mm:
                 self.last_look = f"목표 마커 정면 (옆 {lat:+.0f}mm) → 접근"
                 return self._start_front_park(now, self.last_look)
             move = -self._travel_sign() * lat
