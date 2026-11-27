@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from beacon.peak_detector import PeakConfig, PeakDetector
 from state_machine.autopark import (
+    AutoParkConfig,
     SAFETY_EMERGENCY,
     SAFETY_PASS,
     AutoParkController,
@@ -102,6 +103,7 @@ def make_controller(search_timeout: float = 5.0) -> AutoParkController:
     )
     return AutoParkController(
         target_slot=0,
+        config=AutoParkConfig(align_mode="sweep"),   # 예전 "돌며 찾기" 흐름 테스트
         beacon_search=beacon,
         align_stage=align,
         parking_controller=parking,

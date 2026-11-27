@@ -42,6 +42,7 @@ def step(ctrl, t, ids=(), seq=None):
 
 def aligning(order=()):
     ctrl = AutoParkController(target_slot=TARGET)
+    ctrl.cfg.align_mode = "sweep"   # 돌며 찾기 방식 테스트
     ctrl.cfg.marker_order = tuple(order)
     ctrl.phase = AutoParkPhase.ARUCO_ALIGN
     ctrl.align_stage.reset(10.0)
@@ -121,6 +122,7 @@ class ResearchTest(unittest.TestCase):
     def test_uses_nearest_marker_not_last_seen(self):
         # 실주행: 4, 3, 2, 1 순서로 봤지만 가장 크게 보인 건 3번 → 목표 0은 한 칸 앞
         ctrl = AutoParkController(target_slot=0)
+        ctrl.cfg.align_mode = "sweep"
         ctrl.phase = AutoParkPhase.ARUCO_ALIGN
         ctrl.align_stage.reset(10.0)
         for t, mid, size in [(10.0, 4, 70.0), (11.0, 3, 120.0), (12.0, 2, 60.0), (13.0, 1, 40.0)]:

@@ -1,0 +1,130 @@
+"""90° 보기 정렬(look90) 테스트.
+
+벽 쪽으로 딱 90° 돌고 → 멈춰서 보고 → 벽 기준으로 방향을 바로잡고
+→ 목표 마커가 옆으로 벗어난 만큼 통로를 따라 앞/뒤로 이동하는지 확인한다.
+실제 카메라처럼 꼭짓점이 있는 5cm 마커를 합성한다 (test_autopark_realign.marker_at).
+    python -m pytest state_machine/test_autopark_look90.py -q
+"""
+
+import unittest
+
+try:
+    import cv2  # noqa: F401
+except ImportError:
+    cv2 = None
+
+from state_machine.autopark import (
+    SAFETY_PASS,
+    AutoParkController,
+    AutoParkPhase,
+    SafetyObservation,
+)
+from state_machine.front_parking import DistanceObservation, RANGE_OK
+from vision.aruco_auto_align import MarkerFrame
+
+if cv2 is not None:
+    from state_machine.test_autopark_realign import marker_at
+
+W, H = 640, 480
+
+
+def look_ctrl():
+    ctrl = AutoParkController(target_slot=0)      # 시험장: 목표 0번, 순서 1,2,3,0,4
+    ctrl.phase = AutoParkPhase.ARUCO_ALIGN
+    ctrl.align_stage.reset(10.0)
+    ctrl._enter_look("LOOK")
+    return ctrl
+
+
+def step(ctrl, t, markers=()):
+    frame = MarkerFrame(seq=int(t * 100), t=t, markers=list(markers), width_px=W, height_px=H)
+    return ctrl.step(t, marker_frame=frame, distance=DistanceObservation(400, RANGE_OK, t),
+                     safety=SafetyObservation(SAFETY_PASS, t))
+
+
+def look(ctrl, make_markers, t0=10.0):
+    """look_sec 동안 프레임을 넣고, 판단이 나온 출력을 돌려준다."""
+    t, out = t0, None
+    while t <= t0 + ctrl.cfg.look_sec + 0.2:
+        out = step(ctrl, t, make_markers(t))
+        if out.phase != AutoParkPhase.ARUCO_ALIGN:
+            break
+        t += 0.1
+    return out
+
+
+class TurnInTest(unittest.TestCase):
+    def test_beacon_done_turns_exactly_90_toward_wall(self):
+        ctrl = AutoParkController(target_slot=0)
+        ctrl.phase = AutoParkPhase.ARUCO_ALIGN
+        ctrl._enter_look("TURN_IN")
+        out = step(ctrl, 10.0)
+        p = ctrl.cfg.search_pulse_pwm
+        self.assertEqual(out.phase, AutoParkPhase.REALIGN)
+        self.assertEqual((out.left, out.right), (-p, p))                 # 왼쪽(벽 쪽)
+        turns = [s for s in ctrl._realign_plan if s[1] != 0]
+        self.assertEqual(len(turns), ctrl.cfg.pulses_per_90)             # 딱 90°만큼
+        self.assertEqual(ctrl._after_plan_stage, "LOOK")
+
+
+@unittest.skipIf(cv2 is None, "OpenCV 없음")
+class LookDecisionTest(unittest.TestCase):
+    def test_target_straight_in_front_starts_parking(self):
+        ctrl = look_ctrl()
+        out = look(ctrl, lambda t: [marker_at(5, 450, face_marker=False, t=t, marker_id=0)])
+        self.assertEqual(out.phase, AutoParkPhase.FRONT_PARK)
+        self.assertIn("정면", ctrl.last_look)
+
+    def test_target_past_by_80mm_turns_to_aisle_and_backs_80mm(self):
+        ctrl = look_ctrl()
+        out = look(ctrl, lambda t: [marker_at(80, 450, face_marker=False, t=t, marker_id=0)])
+        self.assertEqual(out.phase, AutoParkPhase.REALIGN)
+        p, v = ctrl.cfg.search_pulse_pwm, ctrl.cfg.realign_pwm
+        self.assertEqual((out.left, out.right), (p, -p))                 # 통로 방향(오른쪽) 90°
+        move = ctrl._realign_plan[-1]
+        self.assertEqual((move[1], move[2]), (-v, -v))                   # 지나쳤으니 뒤로
+        self.assertIn("뒤로 80mm", move[3])
+        self.assertEqual(ctrl._after_plan_stage, "TURN_IN")              # 이동 후 다시 90° 보기
+
+    def test_target_not_reached_moves_forward(self):
+        ctrl = look_ctrl()
+        look(ctrl, lambda t: [marker_at(-100, 450, face_marker=False, t=t, marker_id=0)])
+        move = ctrl._realign_plan[-1]
+        self.assertGreater(move[1], 0)
+        self.assertIn("앞으로 100mm", move[3])
+
+    def test_tilted_to_wall_fixes_heading_first(self):
+        # 90°가 덜 돌아서 벽과 15° 틀어짐 → 이동하기 전에 조금 돌아서 벽과 맞춘다
+        ctrl = look_ctrl()
+        out = look(ctrl, lambda t: [marker_at(0, 450, face_marker=False, turn_right_deg=-15,
+                                              t=t, marker_id=0)])
+        self.assertEqual(out.phase, AutoParkPhase.REALIGN)
+        p = ctrl.cfg.search_pulse_pwm
+        self.assertEqual((out.left, out.right), (p, -p))                 # 오른쪽으로 바로잡기
+        n = sum(1 for s in ctrl._realign_plan if s[1] != 0)
+        self.assertEqual(n, round(15 / (90 / ctrl.cfg.pulses_per_90)))
+        self.assertEqual(ctrl._after_plan_stage, "LOOK")                 # 바로잡고 다시 보기
+
+    def test_only_other_marker_uses_order_and_its_offset(self):
+        # 목표 0 안 보이고 3번이 30mm 옆에 보임. 순서 1,2,3,0,4 → 0은 3번보다 한 칸(290mm) 앞
+        ctrl = look_ctrl()
+        look(ctrl, lambda t: [marker_at(30, 450, face_marker=False, t=t, marker_id=3)])
+        move = ctrl._realign_plan[-1]
+        self.assertGreater(move[1], 0)
+        self.assertIn("앞으로 260mm", move[3])                            # 290 - 30
+        self.assertIn("3번 기준 +1칸", ctrl.last_look)
+
+    def test_nothing_visible_moves_one_slot_forward(self):
+        ctrl = look_ctrl()
+        look(ctrl, lambda t: [])
+        self.assertIn("앞으로 290mm", ctrl._realign_plan[-1][3])
+
+    def test_gives_up_after_max_moves(self):
+        ctrl = look_ctrl()
+        ctrl.look_moves = ctrl.cfg.max_look_moves
+        out = look(ctrl, lambda t: [])
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+
+
+if __name__ == "__main__":
+    unittest.main()

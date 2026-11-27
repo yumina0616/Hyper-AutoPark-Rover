@@ -128,11 +128,33 @@ class AutoParkRunner:
         link.send_drive(out.left, out.right)
 
         self._publish(out)
+        self._log_beacon(now)
 
         if self.controller.terminal:
             self._enabled = False
             self.close()
         return out
+
+    def _log_beacon(self, now: float) -> None:
+        """비콘 탐색 중 0.5초마다 평균 계산 상태를 보여 준다."""
+        if self.controller.phase.value != "BEACON_SEARCH":
+            return
+        if now - getattr(self, "_last_beacon_log", 0.0) < 0.5:
+            return
+        self._last_beacon_log = now
+        bs = getattr(self.controller, "beacon_search", None)
+        det = getattr(bs, "detector", None)
+        if det is None:
+            return
+        samples = list(getattr(det, "_samples", []))
+        last = f"{samples[-1][1]:.0f}" if samples else "-"
+        avg = f"{det.filtered:.1f}" if det.filtered is not None else "-"
+        peak = f"{det.peak_rssi:.1f}" if det.peak_rssi is not None else "-"
+        below = ""
+        if det.filtered is not None and det.peak_rssi is not None:
+            below = f", 최대보다 {det.peak_rssi - det.filtered:.1f}dB 낮음 (기준 {det.cfg.drop_db:g})"
+        self.log(f"[beacon] 최근 {last} | 평균({det.cfg.window_sec:g}초 {len(samples)}개) {avg}"
+                 f" | 최대 {peak}{below} | {getattr(bs.phase, 'value', bs.phase)}")
 
     def _publish(self, out: AutoParkOutput) -> None:
         self.last_output = out

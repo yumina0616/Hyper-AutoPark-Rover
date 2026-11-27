@@ -81,6 +81,9 @@ class PeakDetector:
         if self.cfg.filter == "median":
             mid = len(values) // 2
             self.filtered = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+        elif self.cfg.filter == "upper":
+            top = values[len(values) // 2:]          # 센 쪽 절반 (약한 채널 값에 덜 흔들림)
+            self.filtered = sum(top) / len(top)
         else:
             self.filtered = sum(values) / len(values)
 

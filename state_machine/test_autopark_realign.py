@@ -85,6 +85,7 @@ def ok_safety(t):
 
 def parking_ctrl(frames=3):
     ctrl = AutoParkController(target_slot=0)
+    ctrl.cfg.align_mode = "sweep"   # 예전 재정렬(후진·회전·옆 이동) 테스트
     ctrl.cfg.pose_check_frames = frames
     ctrl.phase = AutoParkPhase.FRONT_PARK
     return ctrl
