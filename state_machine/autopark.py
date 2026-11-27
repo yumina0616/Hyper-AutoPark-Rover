@@ -102,6 +102,9 @@ class AutoParkConfig:
     beacon_approach_pwm: int = 70               # 감속 없음 (후진도 이 세기로 한다)
     beacon_return_gain: float = 1.25            # 후진이 덜 돌아와서 늘림 TODO: 실측
     beacon_search_timeout_sec: float = 45.0
+    # 2026-11-27 실주행: 목표 근처에 가면 -69가 찍히기 시작 → 최근 1.5초에 4번 이상이면 도착으로 본다
+    beacon_arrive_rssi: Optional[float] = -69.0   # TODO: 실측 (None이면 끔)
+    beacon_arrive_count: int = 4
 
     # 마커 정렬 방식
     #   "look90": 벽 쪽으로 딱 90° 돌아서 보고 → 벽(마커) 기준으로 방향을 바로잡고
@@ -115,6 +118,7 @@ class AutoParkConfig:
     wall_yaw_tol_deg: float = 6.0               # 벽과 이 이상 틀어지면 조금 돌아서 바로잡음
     max_yaw_fixes: int = 3                      # 한 번 볼 때 방향 바로잡기 최대 횟수
     max_look_moves: int = 6                     # 앞뒤로 옮겨서 다시 보기 최대 횟수
+    peek_pulses: int = 3                        # 아무것도 안 보이면 좌우로 이만큼(약 15°) 돌아서 더 본다
 
     # 자세 추정 (vision/pose.py)
     camera_hfov_deg: float = DEFAULT_HFOV_DEG   # TODO: 카메라 보정으로 교체
@@ -196,6 +200,8 @@ class AutoParkController:
                 approach_rssi=None,
                 return_gain=self.cfg.beacon_return_gain,
                 search_timeout=self.cfg.beacon_search_timeout_sec,
+                arrive_rssi=self.cfg.beacon_arrive_rssi,
+                arrive_count=self.cfg.beacon_arrive_count,
             )
         )
         self.align_stage = align_stage or ArucoAlignStage(
@@ -257,6 +263,8 @@ class AutoParkController:
         self._yaw_fixes = 0
         self.look_moves = 0
         self.last_look: Optional[str] = None    # 마지막 판단 내용 (로그·테스트용)
+        self._peek = 0                          # 안 보일 때 좌우 확인 단계 (0: 안 함, 1: 벽쪽, 2: 반대쪽)
+        self._peek_offset = 0                   # 직각에서 벽 쪽(+)으로 더 돈 횟수
         self._realign_plan: list[tuple[float, int, int, str]] = []  # (끝 시각, L, R, 설명)
         self.last_pose: Optional[tuple[float, float]] = None        # 마지막 자세 확인 평균
         self.parking_controller.reset()
@@ -576,6 +584,8 @@ class AutoParkController:
         self._look_obs = []
         if stage == "TURN_IN":
             self._yaw_fixes = 0
+            self._peek = 0
+            self._peek_offset = 0
 
     def _to_wall(self) -> int:
         """벽(칸) 쪽으로 도는 방향. +1 = 오른쪽 회전."""
@@ -686,8 +696,21 @@ class AutoParkController:
                               f" → 통로 따라 {move:+.0f}mm 이동")
             return self._look_move(now, move)
 
-        # 4) 아무것도 안 보이면 앞으로 한 칸
-        self.last_look = "마커 안 보임 → 앞으로 한 칸"
+        # 4) 아무것도 안 보이면: 벽을 제대로 보고 있으면 마커가 최소 하나는 보여야 한다
+        #    (50cm에서 화면 폭 약 41cm, 마커 간격 29cm). 90°가 빗나갔을 수 있으니
+        #    먼저 좌우로 조금씩 돌아서 더 본다. 그래도 없으면 직각으로 돌아온 뒤 앞으로 한 칸.
+        k = self.cfg.peek_pulses
+        if self._peek == 0:
+            self._peek, self._peek_offset = 1, k
+            self.last_look = f"마커 안 보임 → 벽 쪽으로 {k}번 더 돌아서 보기"
+            plan, _ = self._pulse_plan(now, self._to_wall(), k, "벽 쪽으로 조금 더 돌아 보기")
+            return self._run_plan(now, plan, "LOOK", self.last_look)
+        if self._peek == 1:
+            self._peek, self._peek_offset = 2, -k
+            self.last_look = f"마커 안 보임 → 반대쪽으로 {2 * k}번 돌아서 보기"
+            plan, _ = self._pulse_plan(now, -self._to_wall(), 2 * k, "반대쪽으로 돌아 보기")
+            return self._run_plan(now, plan, "LOOK", self.last_look)
+        self.last_look = "좌우로 봐도 마커 안 보임 → 앞으로 한 칸"
         return self._look_move(now, self.cfg.slot_pitch_mm)
 
     def _look_move(self, now: float, move_mm: float) -> AutoParkOutput:
@@ -695,7 +718,10 @@ class AutoParkController:
             return self._abort(f"목표 ID {self.target_slot} 마커 앞으로 {self.look_moves}번 옮겨도 못 맞춤")
         self.look_moves += 1
         to_aisle = -self._to_wall()
-        plan, t = self._pulse_plan(now, to_aisle, self.cfg.pulses_per_90, "통로 방향으로 90° 회전")
+        # 좌우 확인으로 직각에서 벗어난 만큼(_peek_offset) 더하거나 빼서 정확히 통로 방향을 본다
+        count = max(0, self.cfg.pulses_per_90 + self._peek_offset)
+        self._peek, self._peek_offset = 0, 0
+        plan, t = self._pulse_plan(now, to_aisle, count, "통로 방향으로 90° 회전")
         v = self.cfg.realign_pwm * (1 if move_mm > 0 else -1)
         sec = min(6.0, max(self.cfg.realign_shift_min_sec, abs(move_mm) / self.cfg.realign_mm_per_sec))
         where = "앞으로" if move_mm > 0 else "뒤로"

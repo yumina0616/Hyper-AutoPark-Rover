@@ -47,6 +47,11 @@ class SearchConfig:
     return_timeout: float = 10.0    # 복귀 시간이 이보다 길면 이상한 것 → 중단 (#7 RETURN_TIMEOUT) TODO
     # 복귀(후진) 시간 = 지나간 시간 × 이 배율. 후진이 전진보다 덜 나가면 1보다 크게.
     return_gain: float = 1.0        # TODO: 실측
+    # "목표 근처 도착" 조건: 최근 arrive_window_sec 동안 arrive_rssi 이상 값이 arrive_count번 이상이면
+    # 그 자리에서 멈춘다 (되돌아오기 없음). None이면 쓰지 않음 (최댓값 지나치기 방식만).
+    arrive_rssi: Optional[float] = None
+    arrive_count: int = 4
+    arrive_window_sec: float = 1.5
     trim_left: int = 0              # 직진할 때 휘는 것 보정 (#9 TRIM)   TODO: 실험으로 결정
     trim_right: int = 0
 
@@ -70,6 +75,7 @@ class BeaconSearch:
         self._segments: List[Tuple[float, int]] = []   # (시작 시각, pwm) — 직진 명령 기록
         self._return_plan: List[Tuple[float, int]] = []  # (끝나는 시각, pwm)
         self.return_duration = 0.0
+        self._recent: List[Tuple[float, float]] = []    # (시각, rssi) 도착 판단용
 
     # ── 입력 ─────────────────────────────────────────
     def start(self, now: float) -> None:
@@ -80,10 +86,19 @@ class BeaconSearch:
         self._segments = []
         self._return_plan = []
         self.return_duration = 0.0
+        self._recent = []
 
     def on_rssi(self, t: float, rssi: float) -> None:
         if self.phase in (SearchPhase.SEARCH, SearchPhase.APPROACH):
             self.detector.update(t, rssi)
+            self._recent.append((t, float(rssi)))
+            self._recent = [(rt, r) for rt, r in self._recent if rt >= t - self.cfg.arrive_window_sec]
+
+    def arrived(self) -> bool:
+        if self.cfg.arrive_rssi is None:
+            return False
+        strong = sum(1 for _, r in self._recent if r >= self.cfg.arrive_rssi)
+        return strong >= self.cfg.arrive_count
 
     # ── 주기 루프 ────────────────────────────────────
     def step(self, now: float) -> SearchOutput:
@@ -95,6 +110,11 @@ class BeaconSearch:
 
     def _step_search(self, now: float) -> SearchOutput:
         det = self.detector
+        if self.arrived():
+            self.phase = SearchPhase.DONE
+            self.reason = (f"목표 근처 도착 (최근 {self.cfg.arrive_window_sec:g}초에 "
+                           f"{self.cfg.arrive_rssi:g}dBm 이상 {self.cfg.arrive_count}번 이상)")
+            return SearchOutput(self.phase, 0, 0, self.reason)
         if det.passed:
             self._begin_return(now)
             return self._step_return(now)

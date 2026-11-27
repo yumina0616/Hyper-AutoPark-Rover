@@ -201,3 +201,37 @@ class ReturnGainTest(unittest.TestCase):
             s._begin_return(3.0)
             self.assertAlmostEqual(s._return_plan[-1][0] - 3.0, expected)
             self.assertLess(s._return_plan[-1][1], 0)
+
+
+class ArriveTest(unittest.TestCase):
+    def make(self):
+        s = BeaconSearch(config=SearchConfig(approach_rssi=None, arrive_rssi=-69.0, arrive_count=4))
+        s.start(0.0)
+        return s
+
+    def test_arrives_when_strong_values_repeat(self):
+        s = self.make()
+        t = 0.0
+        for r in [-78, -76, -69, -74, -68, -69, -67]:      # 1.5초 안에 -69 이상 4번
+            s.on_rssi(t, r)
+            out = s.step(t)
+            t += 0.2
+        self.assertEqual(out.phase, SearchPhase.DONE)
+        self.assertIn("목표 근처 도착", out.reason)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_single_strong_spike_does_not_arrive(self):
+        s = self.make()
+        t = 0.0
+        for r in [-78, -76, -68, -77, -79, -76, -78, -66, -77]:
+            s.on_rssi(t, r)
+            out = s.step(t)
+            t += 0.2
+        self.assertNotEqual(out.phase, SearchPhase.DONE)
+
+    def test_off_by_default(self):
+        s = BeaconSearch(config=SearchConfig(approach_rssi=None))
+        s.start(0.0)
+        for i in range(6):
+            s.on_rssi(i * 0.1, -60)
+        self.assertFalse(s.arrived())

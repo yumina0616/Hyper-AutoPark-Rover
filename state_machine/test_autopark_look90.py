@@ -114,14 +114,33 @@ class LookDecisionTest(unittest.TestCase):
         self.assertIn("앞으로 260mm", move[3])                            # 290 - 30
         self.assertIn("3번 기준 +1칸", ctrl.last_look)
 
-    def test_nothing_visible_moves_one_slot_forward(self):
+    def test_nothing_visible_peeks_left_and_right_before_moving(self):
         ctrl = look_ctrl()
-        look(ctrl, lambda t: [])
+        p, k = ctrl.cfg.search_pulse_pwm, ctrl.cfg.peek_pulses
+
+        def finish_plan(t):
+            end = ctrl._realign_plan[-1][0]
+            out = step(ctrl, end + 0.01)
+            self.assertEqual(out.phase, AutoParkPhase.ARUCO_ALIGN)
+            return end + 0.02
+
+        out = look(ctrl, lambda t: [])                                   # ① 벽 쪽으로 더 돌아 보기
+        self.assertEqual((out.left, out.right), (-p, p))
+        self.assertEqual(sum(1 for s in ctrl._realign_plan if s[1] != 0), k)
+        t = finish_plan(10.0)
+        out = look(ctrl, lambda t: [], t0=t)                             # ② 반대쪽으로 돌아 보기
+        self.assertEqual((out.left, out.right), (p, -p))
+        self.assertEqual(sum(1 for s in ctrl._realign_plan if s[1] != 0), 2 * k)
+        t = finish_plan(t)
+        look(ctrl, lambda t: [], t0=t)                                   # ③ 그래도 없으면 이동
+        turns = [s for s in ctrl._realign_plan if s[1] != 0 and s[1] == -s[2]]
+        self.assertEqual(len(turns), ctrl.cfg.pulses_per_90 - k)        # 직각에서 벗어난 만큼 덜 돈다
         self.assertIn("앞으로 290mm", ctrl._realign_plan[-1][3])
 
     def test_gives_up_after_max_moves(self):
         ctrl = look_ctrl()
         ctrl.look_moves = ctrl.cfg.max_look_moves
+        ctrl._peek = 2                                                   # 좌우 확인까지 끝난 상태
         out = look(ctrl, lambda t: [])
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
 
