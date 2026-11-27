@@ -43,11 +43,12 @@ class FrontParkingConfig:
     tilt_tol_deg: float = 10.0           # 허용 기울기 (팀 결정 2026-11-27, ±5~10 검토 → 10)
     lateral_tol_mm: float = 30.0         # 허용 옆 오차 (TODO: 로버 폭·칸 폭으로 계산해 확정)
     slowdown_distance_mm: int = 300      # 감속 시작 거리 (mm)
-    drive_speed: int = 115               # 일반 접근 속도 (-255 ~ 255)
-    slow_speed: int = 95                 # 근접 감속 속도
-    align_speed: int = 90                # 제자리 정렬 회전 속도
+    # 2026-11-27: 예전 접근 115는 비콘 직진(100)보다 빨라서 낮춤. 회전은 절반으로.
+    drive_speed: int = 70                # 일반 접근 속도 (-255 ~ 255)  TODO: 실측 (MIN_PWM 이상)
+    slow_speed: int = 55                 # 근접 감속 속도  TODO: 실측 (MIN_PWM 이상)
+    align_speed: int = 45                # 제자리 정렬 회전 속도 (예전 90의 절반)
     approach_steer_kp: float = 0.5       # 접근 중 offset_px → 좌우 PWM 보정
-    approach_max_turn: int = 45          # 접근 중 보정 상한
+    approach_max_turn: int = 25          # 접근 중 보정 상한 (접근 속도를 낮춘 만큼 줄임)
     pivot_offset_px: float = 120.0       # 이보다 크게 벗어나면 전진하지 않고 제자리 정렬
     marker_timeout_sec: float = 0.6      # 마커 미수신 허용 시간 (600ms)
     required_stop_samples: int = 3       # 정지 조건 연속 충족 횟수

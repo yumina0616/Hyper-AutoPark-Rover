@@ -34,6 +34,7 @@ from state_machine.front_parking import (
     RANGE_OK,
     STOP_MISALIGNED_NEAR,
 )
+from vision.align import AlignConfig
 from vision.aruco_auto_align import ArucoAlignStage, MarkerFrame, StageConfig
 from vision.pose import DEFAULT_HFOV_DEG, DEFAULT_MARKER_MM, PoseEstimator
 
@@ -55,9 +56,15 @@ class AutoParkConfig:
     # 주차칸이 통로 진행 방향 왼쪽이고 전면 주차하는 배치의 기본값.
     # 실제 카메라/모터 방향을 바퀴를 띄운 상태에서 반드시 확인할 것.
     marker_search_direction: str = "left"
-    marker_search_pwm: int = 60
-    marker_search_sec: float = 6.0
-    align_timeout_sec: float = 15.0
+    # 2026-11-27 실주행: 탐색 회전 60은 너무 빨라 마커를 못 잡고 정렬 시간 초과 → 회전 속도 절반.
+    # 느려진 만큼 탐색·정렬 제한 시간을 늘렸다. 30이 바닥에서 안 돌면 올릴 것 (TODO: MIN_PWM 실측)
+    marker_search_pwm: int = 30
+    marker_search_sec: float = 12.0
+    align_timeout_sec: float = 25.0
+    # 마커를 화면 가운데로 맞추는 회전 (P제어). 예전 kp 100 / 최대 100 / 최소 60의 절반
+    align_kp: float = 50.0
+    align_max_turn: int = 50
+    align_min_turn_pwm: int = 30
     parking_timeout_sec: float = 20.0
     sensor_ready_timeout_sec: float = 5.0
     beacon_wait_timeout_sec: float = 10.0
@@ -76,9 +83,10 @@ class AutoParkConfig:
     pose_check_timeout_sec: float = 3.0         # 이 안에 다 못 모으면 중단
     # 재정렬 동작 (엔코더 없음 → 시간 기반). 허용 기울기·옆 오차는 FrontParkingConfig 값을 쓴다.
     max_realign_attempts: int = 3
-    realign_pwm: int = 80                       # TODO: 실험으로 결정 (MIN_PWM 이상)
+    realign_pwm: int = 80                       # 후진·옆 이동 속도 TODO: 실험으로 결정 (MIN_PWM 이상)
     realign_backup_sec: float = 0.8             # 벽에서 떨어지는 후진 시간 TODO: 실측
-    realign_turn_sec: float = 0.9               # 약 90° 회전 시간 TODO: 실측
+    realign_turn_pwm: int = 40                  # 회전 속도 (예전 80의 절반, 2026-11-27)
+    realign_turn_sec: float = 1.8               # realign_turn_pwm으로 약 90° 회전 시간 TODO: 실측
     realign_mm_per_sec: float = 100.0           # realign_pwm 직진 속도 TODO: 실측
     realign_shift_min_sec: float = 0.2
     realign_shift_max_sec: float = 3.0
@@ -149,6 +157,11 @@ class AutoParkController:
                 search_sec=self.cfg.marker_search_sec,
                 continue_on_wrong_marker=True,
                 reacquire_if_lost=True,
+            ),
+            align_config=AlignConfig(
+                kp=self.cfg.align_kp,
+                max_turn=self.cfg.align_max_turn,
+                min_turn_pwm=self.cfg.align_min_turn_pwm,
             ),
         )
         self.parking_controller = parking_controller or FrontParkingController(
@@ -436,7 +449,8 @@ class AutoParkController:
         t += self.cfg.realign_backup_sec
         plan.append((t, -pwm, -pwm, "벽에서 뒤로 빠짐"))
         t += self.cfg.realign_turn_sec
-        plan.append((t, to_aisle * pwm, -to_aisle * pwm, "통로 방향으로 회전"))
+        turn = self.cfg.realign_turn_pwm
+        plan.append((t, to_aisle * turn, -to_aisle * turn, "통로 방향으로 회전"))
         t += shift_sec
         label = "칸을 지나쳐서 후진" if ahead else "칸 앞까지 직진"
         plan.append((t, shift_dir * pwm, shift_dir * pwm, f"{label} ({abs(lateral_mm):.0f}mm)"))

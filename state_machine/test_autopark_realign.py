@@ -147,19 +147,21 @@ class PoseCheckTest(unittest.TestCase):
         self.assertEqual((out.left, out.right), (-80, -80))          # ① 벽에서 뒤로 빠짐
         self.assertIn("기울기", out.reason)
         t = 1.15
-        turn = step(ctrl, t + 0.85, mm=400)
-        self.assertEqual((turn.left, turn.right), (80, -80))          # ② 오른쪽(통로 방향)으로 회전
-        shift = step(ctrl, t + 1.75, mm=400)
+        back, rot = ctrl.cfg.realign_backup_sec, ctrl.cfg.realign_turn_sec
+        turn = step(ctrl, t + back + 0.05, mm=400)
+        p = ctrl.cfg.realign_turn_pwm
+        self.assertEqual((turn.left, turn.right), (p, -p))            # ② 오른쪽(통로 방향)으로 회전
+        shift = step(ctrl, t + back + rot + 0.05, mm=400)
         self.assertEqual((shift.left, shift.right), (-80, -80))       # ③ 지나쳤으니 후진
         self.assertIn("후진", shift.detail)
-        done = step(ctrl, t + 1.7 + 0.61, mm=400)                     # 60mm / 100mm/s = 0.6초
+        done = step(ctrl, t + back + rot + 0.61, mm=400)              # 60mm / 100mm/s = 0.6초
         self.assertEqual(done.phase, AutoParkPhase.ARUCO_ALIGN)       # ④ 다시 마커 찾기
         self.assertEqual(ctrl.realign_attempts, 1)
 
     def test_tilted_before_slot_drives_forward(self):
         ctrl = parking_ctrl()
         run_pose_check(ctrl, lateral_mm=-60)
-        shift = step(ctrl, 1.15 + 1.75, mm=400)
+        shift = step(ctrl, 1.15 + ctrl.cfg.realign_backup_sec + ctrl.cfg.realign_turn_sec + 0.05, mm=400)
         self.assertEqual((shift.left, shift.right), (80, 80))
         self.assertIn("직진", shift.detail)
 
@@ -176,7 +178,7 @@ class PoseCheckTest(unittest.TestCase):
     def test_forward_shift_stops_for_obstacle(self):
         ctrl = parking_ctrl()
         run_pose_check(ctrl, lateral_mm=-60)
-        out = step(ctrl, 1.15 + 1.75, mm=100)
+        out = step(ctrl, 1.15 + ctrl.cfg.realign_backup_sec + ctrl.cfg.realign_turn_sec + 0.05, mm=100)
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("장애물", out.reason)
 
