@@ -7,6 +7,7 @@
 """
 
 import unittest
+from types import SimpleNamespace
 
 try:
     import cv2  # noqa: F401
@@ -21,6 +22,7 @@ from state_machine.autopark import (
 )
 from state_machine.front_parking import DistanceObservation, RANGE_OK
 from vision.aruco_auto_align import MarkerFrame
+from vision.pose import Pose
 
 if cv2 is not None:
     from state_machine.test_autopark_realign import marker_at
@@ -65,6 +67,48 @@ class TurnInTest(unittest.TestCase):
         turns = [s for s in ctrl._realign_plan if s[1] != 0]
         self.assertEqual(len(turns), ctrl.cfg.pulses_per_90)             # 딱 90°만큼
         self.assertEqual(ctrl._after_plan_stage, "LOOK")
+
+
+class WallDistanceCheckTest(unittest.TestCase):
+    def test_compares_same_marker_after_a_complete_move(self):
+        ctrl = look_ctrl()
+        ctrl.pose_estimator = SimpleNamespace(estimate=lambda marker, *_: marker.pose)
+
+        def marker(mid, wall_dist, size=80, offset=0):
+            return SimpleNamespace(
+                id=mid, size_px=size, corners=True, pose=Pose(wall_dist, offset, 0, 0)
+            )
+
+        move = look(ctrl, lambda t: [marker(1, 500), marker(2, 510, size=70)])
+        self.assertEqual(move.phase, AutoParkPhase.REALIGN)
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)         # 직진 끝
+        step(ctrl, now + 0.1)   # 벽 쪽 회전 시작
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)         # 벽 쪽 회전 끝
+
+        # 회전 도중에 촬영된 프레임은 새 시퀀스여도 벽 거리 표본에 넣지 않는다.
+        old = MarkerFrame(1, now - 0.1, [marker(2, 900)], W, H)
+        ctrl.step(now + 0.1, marker_frame=old, safety=SafetyObservation(SAFETY_PASS, now + 0.1))
+        self.assertEqual(ctrl._look_poses, {})
+        for i in range(1, 4):
+            out = step(ctrl, now + 0.5 * i + 0.11, [marker(2, 540, offset=120), marker(3, 550, size=90)])
+        self.assertEqual((out.left, out.right), (0, 0))
+        self.assertIn("510 → 540mm (변화 +30mm, 같은 2번", out.detail)
+        self.assertIn("목표 +870mm, 주행 명령 6.00초", out.detail)
+        self.assertIn("통로 이동 추정 +120mm", out.detail)
+        self.assertNotIn("벽 거리 비교", step(ctrl, now + 1.7, [marker(3, 550)]).detail)
+
+    def test_different_markers_are_labeled_and_insufficient_samples_are_skipped(self):
+        ctrl = look_ctrl()
+        before = {1: [Pose(mm, 0, 0, 0) for mm in (490, 500, 530)]}
+        ctrl._wall_before_move = before, -290.0, 2.9
+        ctrl._look_poses = {3: [Pose(mm, 0, 0, 0) for mm in (450, 460, 500)]}
+        self.assertIn("변화 -40mm, 1번 → 3번, 같은 벽 가정", ctrl._decide_look(12.0).detail)
+
+        ctrl._wall_before_move = before, 290.0, 2.9
+        ctrl._look_poses = {1: [Pose(mm, 0, 0, 0) for mm in (480, 490)]}
+        self.assertIn("비교 생략 (이동 후 마커 자세 부족", ctrl._decide_look(12.0).detail)
 
 
 @unittest.skipIf(cv2 is None, "OpenCV 없음")

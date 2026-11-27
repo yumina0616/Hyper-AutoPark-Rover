@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from statistics import median
 from typing import Optional, Sequence
 
 from state_machine.beacon_search import BeaconSearch, SearchConfig, SearchPhase
@@ -42,7 +43,7 @@ from state_machine.front_parking import (
 )
 from vision.align import AlignConfig
 from vision.aruco_auto_align import ArucoAlignStage, MarkerFrame, StageConfig
-from vision.pose import DEFAULT_HFOV_DEG, DEFAULT_MARKER_MM, PoseEstimator
+from vision.pose import DEFAULT_HFOV_DEG, DEFAULT_MARKER_MM, Pose, PoseEstimator
 
 
 class AutoParkPhase(str, Enum):
@@ -262,6 +263,8 @@ class AutoParkController:
         self._look_started: Optional[float] = None
         self._look_seq: Optional[int] = None
         self._look_obs: list[tuple[int, float, Optional[float], Optional[float]]] = []  # (id, 크기, yaw, 옆)
+        self._look_poses: dict[int, list[Pose]] = {}
+        self._wall_before_move: Optional[tuple[dict[int, list[Pose]], float, float]] = None
         self._look_frames = 0                   # 보는 동안 받은 새 영상 수
         self._yaw_fixes = 0
         self.look_moves = 0
@@ -585,6 +588,7 @@ class AutoParkController:
         self._look_started = None
         self._look_seq = None
         self._look_obs = []
+        self._look_poses = {}
         self._look_frames = 0
         if stage == "TURN_IN":
             self._yaw_fixes = 0
@@ -633,11 +637,13 @@ class AutoParkController:
         fresh = (
             marker_frame is not None
             and marker_frame.seq != self._look_seq
+            and marker_frame.t >= self._look_started
             and now - marker_frame.t <= self.cfg.look_frame_max_age_sec
         )
         if fresh:
             self._look_seq = marker_frame.seq
             self._look_frames += 1
+            frame_poses = {}
             for m in marker_frame.markers:
                 mid = int(getattr(m, "id", -1))
                 if not 0 <= mid <= 4:
@@ -652,7 +658,10 @@ class AutoParkController:
                         pose = None
                     if pose is not None:
                         yaw, lat = pose.yaw_deg, pose.offset_mm
+                        frame_poses[mid] = pose
                 self._look_obs.append((mid, float(getattr(m, "size_px", 0.0)), yaw, lat))
+            for mid, pose in frame_poses.items():
+                self._look_poses.setdefault(mid, []).append(pose)
         waited = now - self._look_started
         if waited < self.cfg.look_sec:
             return self._stop(f"멈춰서 마커 보기 (영상 {self._look_frames}장, 마커 {len(self._look_obs)}개)")
@@ -679,6 +688,9 @@ class AutoParkController:
                 self.last_look = f"벽과 {yaw:+.1f}° 틀어짐 → {n}번 돌아 바로잡기"
                 plan, _ = self._pulse_plan(now, sign, n, "벽과 방향 맞추기")
                 return self._run_plan(now, plan, "LOOK", self.last_look)
+
+        if self._wall_before_move is not None:
+            return self._finish_wall_check()
 
         # 2) 목표 마커가 보이면 옆 오차만 본다
         tgt = [lat for mid, _, _, lat in obs if mid == self.target_slot]
@@ -730,6 +742,37 @@ class AutoParkController:
         self.last_look = "좌우로 봐도 마커 안 보임 → 앞으로 한 칸"
         return self._look_move(now, self.cfg.slot_pitch_mm)
 
+    def _finish_wall_check(self) -> AutoParkOutput:
+        before, move_mm, sec = self._wall_before_move
+        self._wall_before_move = None
+        after = {
+            mid: samples for mid, samples in self._look_poses.items()
+            if len(samples) >= self.cfg.look_min_frames
+        }
+        command = f"목표 {move_mm:+.0f}mm, 주행 명령 {sec:.2f}초"
+        if not before or not after:
+            missing = "전후" if not before and not after else "이동 전" if not before else "이동 후"
+            return self._stop(f"벽 거리 비교 생략 ({missing} 마커 자세 부족, {command})")
+
+        common = before.keys() & after.keys()
+        travel = ""
+        if common:
+            before_id = after_id = max(sorted(common), key=lambda mid: min(len(before[mid]), len(after[mid])))
+            markers = f"같은 {before_id}번"
+            start_offset = median(p.offset_mm for p in before[before_id])
+            end_offset = median(p.offset_mm for p in after[after_id])
+            travel = f", 통로 이동 추정 {(end_offset - start_offset) * self._travel_sign():+.0f}mm"
+        else:
+            before_id = max(before, key=lambda mid: len(before[mid]))
+            after_id = max(after, key=lambda mid: len(after[mid]))
+            markers = f"{before_id}번 → {after_id}번, 같은 벽 가정"
+        start = median(p.wall_dist_mm for p in before[before_id])
+        end = median(p.wall_dist_mm for p in after[after_id])
+        return self._stop(
+            f"벽 거리 비교: {start:.0f} → {end:.0f}mm "
+            f"(변화 {end - start:+.0f}mm, {markers}, {command}{travel})"
+        )
+
     def _look_move(self, now: float, move_mm: float) -> AutoParkOutput:
         if self.look_moves >= self.cfg.max_look_moves:
             return self._abort(f"목표 ID {self.target_slot} 마커 앞으로 {self.look_moves}번 옮겨도 못 맞춤")
@@ -741,6 +784,11 @@ class AutoParkController:
         plan, t = self._pulse_plan(now, to_aisle, count, "통로 방향으로 90° 회전")
         v = self.cfg.realign_pwm * (1 if move_mm > 0 else -1)
         sec = min(6.0, max(self.cfg.realign_shift_min_sec, abs(move_mm) / self.cfg.realign_mm_per_sec))
+        before = {
+            mid: samples for mid, samples in self._look_poses.items()
+            if len(samples) >= self.cfg.look_min_frames
+        }
+        self._wall_before_move = before, move_mm, sec
         where = "앞으로" if move_mm > 0 else "뒤로"
         plan.append((t + sec, v, v, f"통로 따라 {where} {abs(move_mm):.0f}mm"))
         return self._run_plan(now, plan, "TURN_IN", self.last_look or "")
