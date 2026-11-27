@@ -40,8 +40,11 @@ class AutoParkRunner:
         on_status: Optional[Callable[[AutoParkOutput], None]] = None,
         auto_start: bool = True,
         camera_index: Optional[int] = None,
+        beacon_slot: Optional[int] = None,
     ) -> None:
         self.target_slot = int(target_slot)
+        # 따라갈 비콘의 칸 번호 (송신기 BEACON_MAJOR). 없으면 목표 마커 번호와 같다고 본다.
+        self.beacon_slot = self.target_slot if beacon_slot is None else int(beacon_slot)
         self.poll_rssi = poll_rssi
         self.controller = controller or AutoParkController(self.target_slot)
         if camera is None and camera_index is None:
@@ -85,7 +88,7 @@ class AutoParkRunner:
             else:
                 slot, rssi = sample
                 measured_t = now
-            if int(slot) == self.target_slot:
+            if int(slot) == self.beacon_slot:
                 target_rssi.append(RssiObservation(float(measured_t), float(rssi)))
         if self._camera_started:
             marker_frame, camera_error = self.camera.snapshot()

@@ -29,7 +29,10 @@ from bridge_link import RANGE_ERROR, RANGE_OK, RANGE_OUT_OF_RANGE, BridgeLink
 MODE = "idle"
 
 # beacon_search / front_parking / autopark: 목표 칸 번호 (0~4). 나중에 웹 화면에서 선택하도록 바꿈 (#7)
-TARGET_SLOT = 0
+TARGET_SLOT = 0   # 찾을 ArUco 마커 ID
+# 따라갈 비콘(ESP32 송신기)의 칸 번호 = 송신 코드의 BEACON_MAJOR.
+# 원래는 TARGET_SLOT과 같은 번호를 쓰지만, 송신기를 다시 올리지 않고 시험할 때 따로 정한다.
+BEACON_SLOT = 1
 
 # UNO Q에서 Logitech C270은 /dev/video2. video0·1은 qcom-venus 코덱 장치다.
 CAMERA_INDEX = 2
@@ -60,7 +63,7 @@ if MODE == "beacon_search":
     from state_machine.beacon_search import BeaconSearch
 
     rssi_client = RssiClient()
-    beacon = BeaconMode(BeaconSearch(), rssi_client.poll, TARGET_SLOT,
+    beacon = BeaconMode(BeaconSearch(), rssi_client.poll, BEACON_SLOT,
                         log=lambda m: print(m, flush=True))
 
 front_parking = None
@@ -80,6 +83,7 @@ if MODE == "autopark":
     rssi_client = RssiClient()
     autopark = AutoParkRunner(
         target_slot=TARGET_SLOT,
+        beacon_slot=BEACON_SLOT,
         poll_rssi=rssi_client.poll,
         camera_index=CAMERA_INDEX,
         log=lambda m: print(m, flush=True),

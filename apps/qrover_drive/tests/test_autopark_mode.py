@@ -116,6 +116,23 @@ class AutoParkRunnerTest(unittest.TestCase):
         self.assertEqual(link.sent, [(70, 80)])
         self.assertEqual(camera.started, 1)
 
+    def test_beacon_slot_can_differ_from_target_marker(self):
+        # 목표 마커 0번, 비콘 송신기는 1번 (2026-11-27 실주행 배치)
+        controller = FakeController()
+        runner = AutoParkRunner(
+            target_slot=0,
+            beacon_slot=1,
+            poll_rssi=lambda: [(0, -50), (1, -67), (1, -70)],
+            controller=controller,
+            camera=FakeCamera(),
+            log=lambda _: None,
+        )
+        runner.step(FakeLink())
+        self.assertEqual(
+            [sample.rssi for sample in controller.kwargs["target_rssi"]],
+            [-67, -70],
+        )
+
     def test_terminal_controller_does_not_reopen_camera(self):
         camera = FakeCamera()
         controller = FakeController()
