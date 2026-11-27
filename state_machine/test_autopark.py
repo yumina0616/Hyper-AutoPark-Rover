@@ -113,10 +113,40 @@ class AutoParkFlowTest(unittest.TestCase):
         ctrl = make_controller()
         self.assertEqual(ctrl.step(0.0, target_rssi=[-70], allowed=False).left, 0)
         self.assertFalse(ctrl.beacon_started)
-        self.assertEqual(ctrl.step(0.1, allowed=True).detail, "거리 센서 첫 측정 대기")
+        self.assertEqual(ctrl.step(0.1, allowed=True).detail, "거리 센서 정상 측정 대기")
         ready(ctrl, 0.2)
         self.assertEqual(run_step(ctrl, 0.3, target_rssi=[]).detail, "목표 비콘 신호 대기")
         self.assertFalse(ctrl.beacon_started)
+
+    def test_sensor_ready_waits_for_late_feedback_instead_of_abort(self) -> None:
+        # 앱 시작 직후 MCU 신호가 늦게 와도 바로 중단하지 않고 기다린다
+        ctrl = make_controller()
+        late = SafetyObservation(reason=SAFETY_PASS, t=0.0, stale=True)
+        out = ctrl.step(0.5, distance=distance(0.5), safety=late)
+        self.assertEqual(out.phase, AutoParkPhase.SENSOR_READY)
+        self.assertEqual((out.left, out.right), (0, 0))
+        bad = DistanceObservation(-1, RANGE_ERROR, t=1.0)
+        self.assertEqual(ctrl.step(1.0, distance=bad, safety=safety(1.0)).phase,
+                         AutoParkPhase.SENSOR_READY)
+        ok = run_step(ctrl, 1.5)
+        self.assertEqual(ok.phase, AutoParkPhase.BEACON_SEARCH)
+
+    def test_sensor_ready_late_feedback_times_out(self) -> None:
+        ctrl = make_controller()
+        ctrl.cfg.sensor_ready_timeout_sec = 0.5
+        late = SafetyObservation(reason=SAFETY_PASS, t=0.0, stale=True)
+        ctrl.step(0.0, distance=distance(0.0), safety=late)
+        out = ctrl.step(0.6, distance=distance(0.6), safety=late)
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("준비 시간 초과", out.reason)
+
+    def test_stale_feedback_still_aborts_after_start(self) -> None:
+        ctrl = make_controller()
+        ready(ctrl)
+        late = SafetyObservation(reason=SAFETY_PASS, t=0.0, stale=True)
+        out = ctrl.step(1.0, distance=distance(1.0), safety=late)
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("오래됨", out.reason)
 
     def test_sensor_ready_timeout_aborts_without_first_reading(self) -> None:
         ctrl = make_controller()
@@ -229,8 +259,9 @@ class AutoParkFlowTest(unittest.TestCase):
 
     def test_distance_error_aborts_from_beacon_phase(self) -> None:
         ctrl = make_controller()
-        bad_distance = DistanceObservation(-1, RANGE_ERROR, t=0.0)
-        out = ctrl.step(0.0, target_rssi=[-80], distance=bad_distance, safety=safety(0.0))
+        ready(ctrl)
+        bad_distance = DistanceObservation(-1, RANGE_ERROR, t=0.1)
+        out = ctrl.step(0.1, target_rssi=[-80], distance=bad_distance, safety=safety(0.1))
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("거리 센서", out.reason)
 

@@ -193,12 +193,15 @@ class AutoParkController:
             return self._stop("주차 완료")
         if self.phase == AutoParkPhase.ABORT:
             return self._stop("중단", self.reason)
+        if self.phase == AutoParkPhase.SENSOR_READY:
+            # 출발 전에는 늦거나 오류인 값을 "아직 준비 중"으로 보고 기다린다.
+            # 앱 시작 직후 카메라 스레드가 OpenCV를 여는 동안 MCU 신호가 잠깐 밀려
+            # 출발도 하기 전에 ABORT된 적이 있다 (2026-11-27). 준비 시간 초과면 그때 중단.
+            return self._step_sensor_ready(now, distance, safety, allowed)
         if safety is not None and safety.stale:
             return self._abort("MCU 안전상태 피드백이 오래됨")
         if distance is not None and (distance.stale or distance.status == RANGE_ERROR):
             return self._abort("거리 센서 오류 또는 오래된 측정값")
-        if self.phase == AutoParkPhase.SENSOR_READY:
-            return self._step_sensor_ready(now, distance, safety, allowed)
         if safety is None:
             return self._abort("MCU 안전상태 피드백 끊김")
         if safety.reason != SAFETY_PASS:
@@ -226,10 +229,10 @@ class AutoParkController:
             self._sensor_wait_started_at = now
         if now - self._sensor_wait_started_at > self.cfg.sensor_ready_timeout_sec:
             return self._abort("거리 센서 또는 MCU 안전 피드백 준비 시간 초과")
-        if distance is None:
-            return self._stop("거리 센서 첫 측정 대기")
-        if safety is None or safety.reason == SAFETY_NO_COMMAND:
-            return self._stop("MCU 안전상태 첫 피드백 대기")
+        if distance is None or distance.stale or distance.status == RANGE_ERROR:
+            return self._stop("거리 센서 정상 측정 대기")
+        if safety is None or safety.stale or safety.reason == SAFETY_NO_COMMAND:
+            return self._stop("MCU 안전상태 피드백 대기")
         if safety.reason != SAFETY_PASS:
             return self._abort(self._safety_reason(safety.reason))
         self.phase = AutoParkPhase.BEACON_SEARCH

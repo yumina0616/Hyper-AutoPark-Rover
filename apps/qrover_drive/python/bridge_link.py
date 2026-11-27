@@ -31,7 +31,10 @@ SAFETY_EMERGENCY = 4
 @dataclass
 class LinkConfig:
     heartbeat_sec: float = 0.3    # 값이 그대로여도 이 주기로 다시 보냄 (MCU watchdog 1초보다 짧게)
-    stale_sec: float = 0.3        # 이 시간 넘게 새 거리값이 없으면 "오래된 값"   TODO: 실험으로 결정
+    # 이 시간 넘게 새 값이 없으면 "오래된 값". 0.3초는 UNO Q에서 카메라 스레드가 바쁠 때
+    # 정상 신호도 넘겨서(2026-11-27) 0.8초로 늘림. 바퀴를 세우는 안전장치(watchdog 1초,
+    # 비상정지)는 MCU가 자체적으로 지킨다.   TODO: 실험으로 결정
+    stale_sec: float = 0.8
     start_delay_sec: float = 3.0  # 앱 시작 후 이 시간 동안은 정지 명령만 보냄 (로버에서 손 뗄 시간)
 
 
