@@ -112,7 +112,8 @@ class AutoParkConfig:
     #             → 옆으로 벗어난 만큼 통로를 따라 앞/뒤로 이동 (기본)
     #   "sweep" : 돌면서 찾고 가운데로 맞추기 (예전 방식)
     align_mode: str = "look90"
-    pulses_per_90: int = 18                     # 끊어 돌기 몇 번이 90°인지 (영상 추정 약 5°/번) TODO: 실측
+    pulses_per_90: int = 18                     # 왼쪽 90° 끊어 돌기 (시험 바닥 기준)
+    right_pulses_per_90: int = 17               # 오른쪽 90° 끊어 돌기 (시험 바닥 기준)
     turn_pause_sec: float = 0.3                 # 90° 돌 때 한 번 돌고 쉬는 시간
     look_sec: float = 1.5                       # 멈춰서 마커를 보는 시간 (이 동안의 평균으로 판단)
     look_min_frames: int = 3                    # 자세를 믿으려면 최소 이만큼 봐야 함
@@ -599,6 +600,9 @@ class AutoParkController:
         """벽(칸) 쪽으로 도는 방향. +1 = 오른쪽 회전."""
         return -1 if self.cfg.marker_search_direction == "left" else 1
 
+    def _pulses_for_90(self, sign: int) -> int:
+        return self.cfg.right_pulses_per_90 if sign > 0 else self.cfg.pulses_per_90
+
     def _travel_sign(self) -> int:
         """벽을 볼 때 자세의 옆 오차(+ = 카메라가 오른쪽)를 진행 방향 앞(+)으로 바꾸는 부호."""
         return 1 if self.cfg.marker_search_direction == "left" else -1
@@ -625,7 +629,8 @@ class AutoParkController:
         if camera_error:
             return self._abort(f"ArUco 정렬 실패: {camera_error}")
         if self._look_stage == "TURN_IN":
-            plan, _ = self._pulse_plan(now, self._to_wall(), self.cfg.pulses_per_90, "벽 쪽으로 90° 회전")
+            sign = self._to_wall()
+            plan, _ = self._pulse_plan(now, sign, self._pulses_for_90(sign), "벽 쪽으로 90° 회전")
             return self._run_plan(now, plan, "LOOK", "벽 쪽으로 90° 회전")
 
         # LOOK: 멈춰서 look_sec 동안 마커를 모은다
@@ -682,9 +687,9 @@ class AutoParkController:
             yaw = sum(yaws) / len(yaws)
             if abs(yaw) > self.cfg.wall_yaw_tol_deg and self._yaw_fixes < self.cfg.max_yaw_fixes:
                 self._yaw_fixes += 1
-                per = 90.0 / self.cfg.pulses_per_90
-                n = max(1, round(abs(yaw) / per))
                 sign = 1 if yaw > 0 else -1          # yaw + = 오른쪽으로 돌아야 똑바름
+                per = 90.0 / self._pulses_for_90(sign)
+                n = max(1, round(abs(yaw) / per))
                 self.last_look = f"벽과 {yaw:+.1f}° 틀어짐 → {n}번 돌아 바로잡기"
                 plan, _ = self._pulse_plan(now, sign, n, "벽과 방향 맞추기")
                 return self._run_plan(now, plan, "LOOK", self.last_look)
@@ -779,7 +784,7 @@ class AutoParkController:
         self.look_moves += 1
         to_aisle = -self._to_wall()
         # 좌우 확인으로 직각에서 벗어난 만큼(_peek_offset) 더하거나 빼서 정확히 통로 방향을 본다
-        count = max(0, self.cfg.pulses_per_90 + self._peek_offset)
+        count = max(0, self._pulses_for_90(to_aisle) + self._peek_offset)
         self._peek, self._peek_offset = 0, 0
         plan, t = self._pulse_plan(now, to_aisle, count, "통로 방향으로 90° 회전")
         v = self.cfg.realign_pwm * (1 if move_mm > 0 else -1)

@@ -128,6 +128,8 @@ class LookDecisionTest(unittest.TestCase):
         move = ctrl._realign_plan[-1]
         self.assertEqual((move[1], move[2]), (-v, -v))                   # 지나쳤으니 뒤로
         self.assertIn("뒤로 80mm", move[3])
+        turns = [s for s in ctrl._realign_plan if s[1] != 0 and s[1] == -s[2]]
+        self.assertEqual(len(turns), ctrl.cfg.right_pulses_per_90)
         self.assertEqual(ctrl._after_plan_stage, "TURN_IN")              # 이동 후 다시 90° 보기
 
     def test_target_not_reached_moves_forward(self):
@@ -146,7 +148,7 @@ class LookDecisionTest(unittest.TestCase):
         p = ctrl.cfg.search_pulse_pwm
         self.assertEqual((out.left, out.right), (p, -p))                 # 오른쪽으로 바로잡기
         n = sum(1 for s in ctrl._realign_plan if s[1] != 0)
-        self.assertEqual(n, round(15 / (90 / ctrl.cfg.pulses_per_90)))
+        self.assertEqual(n, round(15 / (90 / ctrl.cfg.right_pulses_per_90)))
         self.assertEqual(ctrl._after_plan_stage, "LOOK")                 # 바로잡고 다시 보기
 
     def test_only_other_marker_uses_order_and_its_offset(self):
@@ -178,7 +180,7 @@ class LookDecisionTest(unittest.TestCase):
         t = finish_plan(t)
         look(ctrl, lambda t: [], t0=t)                                   # ③ 그래도 없으면 이동
         turns = [s for s in ctrl._realign_plan if s[1] != 0 and s[1] == -s[2]]
-        self.assertEqual(len(turns), ctrl.cfg.pulses_per_90 - k)        # 직각에서 벗어난 만큼 덜 돈다
+        self.assertEqual(len(turns), ctrl.cfg.right_pulses_per_90 - k)  # 직각에서 벗어난 만큼 덜 돈다
         self.assertIn("앞으로 290mm", ctrl._realign_plan[-1][3])
 
     def test_no_camera_frames_stops_instead_of_moving(self):
