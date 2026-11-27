@@ -78,7 +78,7 @@ class AutoParkConfig:
     # 재탐색: 목표 ID를 못 찾았을 때 몇 칸 앞/뒤로 갈지 정하는 정보
     # marker_order = 진행 방향으로 지나가는 실제 마커 순서 (예: (2, 3, 4, 0, 1)). 비어 있으면
     # 다른 번호를 봐도 방향을 알 수 없으니 앞으로 한 칸씩 간다.
-    marker_order: tuple = ()                    # TODO: 실제 배치 순서로 채우기
+    marker_order: tuple = (1, 2, 3, 0, 4)       # 2026-11-27 시험장: 별표 출발 기준 지나가는 순서
     slot_pitch_mm: float = 290.0                # 칸 사이 거리 (칸 24cm + 간격 5cm) TODO: 실측
     max_research_attempts: int = 4
     # 마커를 화면 가운데로 맞추는 회전 (P제어). 예전 kp 100 / 최대 100 / 최소 60의 절반

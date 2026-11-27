@@ -120,8 +120,18 @@ class ResearchTest(unittest.TestCase):
 
     def test_unknown_order_defaults_to_one_slot_forward(self):
         ctrl = aligning()
+        ctrl.cfg.marker_order = ()
         step(ctrl, 10.0, ids=(3,))
         self.assertEqual(ctrl.research_slots(), 1)
+
+    def test_default_test_site_order_target_0(self):
+        # 시험장 배치 1, 2, 3, 0, 4 · 목표 0번
+        ctrl = AutoParkController(target_slot=0)
+        ctrl.phase = AutoParkPhase.ARUCO_ALIGN
+        ctrl.align_stage.reset(10.0)
+        for seen, slots in [(1, 3), (2, 2), (3, 1), (4, -1)]:
+            ctrl._seen_other_ids = [seen]
+            self.assertEqual(ctrl.research_slots(), slots, f"본 마커 {seen}")
 
     def test_gives_up_after_max_attempts(self):
         ctrl = aligning()
