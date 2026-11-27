@@ -5,9 +5,13 @@
 
 import unittest
 from dataclasses import dataclass
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import vision.aruco_auto_align as auto_align_module
 
 from vision.align import AlignConfig
-from vision.aruco_auto_align import ArucoAlignStage, MarkerFrame, StageConfig
+from vision.aruco_auto_align import ArucoAlignStage, ArucoCamera, MarkerFrame, StageConfig
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,16 @@ class StageTests(unittest.TestCase):
         self.assertEqual(r.state, "WRONG_MARKER")
         self.assertEqual((r.left, r.right), (0, 0))
 
+    def test_wrong_id_can_be_skipped_when_explicitly_enabled(self):
+        stage = ArucoAlignStage(
+            0,
+            StageConfig(search_if_missing=True, continue_on_wrong_marker=True),
+        )
+        stage.reset(100.0)
+        r = stage.step(frame(1, 0.5, marker_id=1), now=100.0)
+        self.assertEqual(r.state, "SEARCHING_WRONG_MARKER")
+        self.assertNotEqual((r.left, r.right), (0, 0))
+
     def test_missing_after_seen_stops_and_does_not_search(self):
         stage = ArucoAlignStage(0, StageConfig(search_if_missing=True))
         stage.reset(100.0)
@@ -84,6 +98,30 @@ class StageTests(unittest.TestCase):
         r = stage.step(frame(2, None, t=100.1), now=100.1)
         self.assertEqual(r.state, "MARKER_MISSING")
         self.assertEqual((r.left, r.right), (0, 0))
+
+    def test_seen_target_is_reacquired_for_limited_time_when_enabled(self):
+        stage = ArucoAlignStage(
+            0,
+            StageConfig(
+                search_if_missing=True,
+                reacquire_if_lost=True,
+                lost_stop_sec=0.2,
+                reacquire_sec=0.5,
+            ),
+        )
+        stage.reset(100.0)
+        stage.step(frame(1, 0.5), now=100.0)
+        hold = stage.step(frame(2, None, t=100.1), now=100.1)
+        self.assertEqual((hold.left, hold.right), (0, 0))
+        self.assertEqual(hold.state, "MARKER_LOST_HOLD")
+
+        searching = stage.step(frame(3, None, t=100.31), now=100.31)
+        self.assertEqual(searching.state, "REACQUIRING")
+        self.assertGreater(searching.left, 0)  # 마지막 마커가 오른쪽이었음
+
+        stopped = stage.step(frame(4, None, t=100.81), now=100.81)
+        self.assertEqual(stopped.state, "MARKER_MISSING")
+        self.assertEqual((stopped.left, stopped.right), (0, 0))
 
     def test_search_disabled_by_default(self):
         r = self.stage.step(frame(1, None), now=100.0)
@@ -123,5 +161,23 @@ class StageTests(unittest.TestCase):
         stage.step(frame(2, None, t=100.1), now=100.1)
         r = stage.step(frame(3, 0.01, t=100.2), now=100.2)
         self.assertEqual(r.state, "CENTERING_CHECK")
+
+
+class CameraBackendTests(unittest.TestCase):
+    def test_linux_opens_configured_index_with_v4l2(self):
+        capture = object()
+        fake_cv2 = SimpleNamespace(
+            CAP_V4L2=200,
+            VideoCapture=Mock(return_value=capture),
+        )
+        camera = ArucoCamera(camera_index=2)
+
+        with patch.object(auto_align_module.sys, "platform", "linux"):
+            opened = camera._open_capture(fake_cv2)
+
+        self.assertIs(opened, capture)
+        fake_cv2.VideoCapture.assert_called_once_with(2, fake_cv2.CAP_V4L2)
+
+
 if __name__ == "__main__":
     unittest.main()

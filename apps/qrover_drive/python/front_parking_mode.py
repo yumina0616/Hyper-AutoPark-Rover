@@ -34,7 +34,6 @@ except ImportError:
     _repo_detect_markers = None
 
 TARGET_MARKER_ID = 0     # 목표 주차칸 마커 ID (0~4)
-CAMERA_INDEX = 0         # Logitech C270 (/dev/video0)
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
@@ -85,13 +84,15 @@ class FrontParkingRunner:
     def __init__(
         self,
         target_marker_id: int = TARGET_MARKER_ID,
-        camera_index: int = CAMERA_INDEX,
+        camera_index: Optional[int] = None,
         config: Optional[FrontParkingConfig] = None,
     ) -> None:
+        if camera_index is None:
+            raise ValueError("camera_index를 지정해야 합니다")
         cfg = config or FrontParkingConfig(target_marker_id=target_marker_id)
         cfg.target_marker_id = target_marker_id
         self.controller = FrontParkingController(cfg)
-        self.camera_index = camera_index
+        self.camera_index = int(camera_index)
         self._cap: Optional[cv2.VideoCapture] = None
         self._fallback = _FallbackArucoDetector()
         self._last_marker: Optional[MarkerObservation] = None

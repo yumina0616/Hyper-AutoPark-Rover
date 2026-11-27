@@ -47,7 +47,7 @@ class TestFrontParkingController(unittest.TestCase):
     def test_out_of_range_continues_driving(self) -> None:
         # ToF 범위 밖(1)은 오류가 아니므로 마커 정렬/접근 주행을 계속한다
         out = self.ctrl.update(
-            MarkerObservation(0, side_px=80.0, offset_px=10.0, t=1.0),
+            MarkerObservation(0, side_px=80.0, offset_px=0.0, t=1.0),
             DistanceObservation(dist_mm=-1, status=RANGE_OUT_OF_RANGE, t=1.0),
             now=1.0,
         )
@@ -72,23 +72,43 @@ class TestFrontParkingController(unittest.TestCase):
         self.assertEqual(rec_out.state, ParkingState.APPROACH)
         self.assertEqual((rec_out.left, rec_out.right), (self.cfg.drive_speed, self.cfg.drive_speed))
 
-    def test_align_turn_directions(self) -> None:
-        # 마커가 오른쪽(+offset)이면 우회전, 왼쪽(-offset)이면 좌회전
+    def test_approach_corrects_direction_while_moving_forward(self) -> None:
+        # 중간 크기 오차는 전진을 유지하면서 좌우 PWM 차이로 보정
         right_out = self.ctrl.update(
             MarkerObservation(0, side_px=80.0, offset_px=60.0, t=1.0),
             DistanceObservation(dist_mm=500, status=RANGE_OK, t=1.0),
             now=1.0,
         )
-        self.assertEqual(right_out.state, ParkingState.ALIGN)
-        self.assertEqual((right_out.left, right_out.right), (self.cfg.align_speed, -self.cfg.align_speed))
+        self.assertEqual(right_out.state, ParkingState.APPROACH)
+        self.assertGreater(right_out.left, right_out.right)
+        self.assertGreater(right_out.right, 0)
 
         left_out = self.ctrl.update(
             MarkerObservation(0, side_px=80.0, offset_px=-60.0, t=1.1),
             DistanceObservation(dist_mm=500, status=RANGE_OK, t=1.1),
             now=1.1,
         )
-        self.assertEqual(left_out.state, ParkingState.ALIGN)
-        self.assertEqual((left_out.left, left_out.right), (-self.cfg.align_speed, self.cfg.align_speed))
+        self.assertEqual(left_out.state, ParkingState.APPROACH)
+        self.assertLess(left_out.left, left_out.right)
+        self.assertGreater(left_out.left, 0)
+
+    def test_large_offset_uses_in_place_alignment(self) -> None:
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=80.0, offset_px=150.0, t=1.0),
+            DistanceObservation(dist_mm=500, status=RANGE_OK, t=1.0),
+            now=1.0,
+        )
+        self.assertEqual(out.state, ParkingState.ALIGN)
+        self.assertEqual((out.left, out.right), (self.cfg.align_speed, -self.cfg.align_speed))
+
+    def test_large_offset_near_wall_stops_instead_of_pivoting(self) -> None:
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=100.0, offset_px=150.0, t=1.0),
+            DistanceObservation(dist_mm=250, status=RANGE_OK, t=1.0),
+            now=1.0,
+        )
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
 
     def test_marker_timeout_triggers_marker_lost(self) -> None:
         # 마커 인식 후 0.6초 초과 미수신 시 MARKER_LOST 정지
@@ -115,15 +135,40 @@ class TestFrontParkingController(unittest.TestCase):
         self.assertEqual(out.state, ParkingState.SAFETY_STOP)
         self.assertEqual((out.left, out.right), (0, 0))
 
-    def test_tof_close_and_vision_close_with_offset_realigns_instead_of_latching(self) -> None:
-        # ToF 150mm 이내 + 마커 크기 충족 상태에서 중심 오차만 45px 넘으면 ALIGN으로 재정렬
+    def test_tof_close_and_vision_close_with_offset_stops_instead_of_turning(self) -> None:
+        # 벽 가까이에서는 제자리 회전 중 모서리가 닿을 수 있으므로 안전 정지
         out = self.ctrl.update(
             MarkerObservation(0, side_px=145.0, offset_px=55.0, t=1.0),
             DistanceObservation(dist_mm=140, status=RANGE_OK, t=1.0),
             now=1.0,
         )
-        self.assertEqual(out.state, ParkingState.ALIGN)
-        self.assertEqual((out.left, out.right), (self.cfg.align_speed, -self.cfg.align_speed))
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_large_marker_with_invalid_tof_stops(self) -> None:
+        # 영상은 이미 가깝다고 하는데 ToF가 유효하지 않으면 더 전진하지 않는다
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=145.0, offset_px=0.0, t=1.0),
+            DistanceObservation(dist_mm=-1, status=RANGE_OUT_OF_RANGE, t=1.0),
+            now=1.0,
+        )
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_parking_timeout_stops(self) -> None:
+        self.cfg.parking_timeout_sec = 1.0
+        self.ctrl.update(
+            MarkerObservation(0, side_px=80.0, offset_px=0.0, t=1.0),
+            DistanceObservation(dist_mm=500, status=RANGE_OK, t=1.0),
+            now=1.0,
+        )
+        out = self.ctrl.update(
+            MarkerObservation(0, side_px=90.0, offset_px=0.0, t=2.1),
+            DistanceObservation(dist_mm=450, status=RANGE_OK, t=2.1),
+            now=2.1,
+        )
+        self.assertEqual(out.state, ParkingState.SAFETY_STOP)
+        self.assertEqual((out.left, out.right), (0, 0))
 
 
 if __name__ == "__main__":

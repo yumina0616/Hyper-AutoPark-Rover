@@ -49,6 +49,7 @@ void loop() {
   // ③ 안전장치 확인 후 실행
   SafetyResult result = applySafety(requested, hasCommand, msSinceCommand,
                                     distanceMm, rangeStatus, WATCHDOG_MS, EMERGENCY_MM);
+  Bridge.notify("safety", (int)result.reason);
   setWheels(result.wheels.left, result.wheels.right);
 
   // 정지 이유가 바뀔 때만 출력 (시리얼 모니터에서 확인용)

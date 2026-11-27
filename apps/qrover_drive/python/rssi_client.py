@@ -1,14 +1,14 @@
 """RSSI 수신기 (App Lab 앱 안) — beacon/rssi_relay.py에 접속해서 RSSI를 받는다
 
     client = RssiClient()
-    for slot_id, rssi in client.poll():   # 주기 루프에서 매번 호출 (기다리지 않음)
+    for sample in client.poll():   # sample.slot_id, sample.rssi, sample.t
         ...
 
 접속 주소를 모르므로 차례로 시도한다:
     1) 환경 변수 RSSI_RELAY_HOST (지정했으면)
     2) 127.0.0.1               (App Lab 앱이 보드와 네트워크를 같이 쓰는 경우)
     3) 컨테이너의 게이트웨이     (App Lab 앱이 별도 가상 네트워크인 경우, 보통 보드 쪽 주소)
-끊기면 RETRY_SEC마다 다시 접속한다. 받은 시각은 쓰지 않고, 앱이 받은 순간의 time.time()을 쓴다.
+끊기면 RETRY_SEC마다 다시 접속한다. rx_scan.py가 기록한 측정 시각을 보존한다.
 """
 
 from __future__ import annotations
@@ -17,7 +17,9 @@ import os
 import socket
 import struct
 import time
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
 
 DEFAULT_PORT = 8765
 RETRY_SEC = 2.0
@@ -37,13 +39,21 @@ def default_gateway() -> Optional[str]:
     return None
 
 
-def parse_line(line: str) -> Optional[Tuple[int, float]]:
-    """rx_scan.py 한 줄 `ISO시각, 칸번호, RSSI` → (칸, rssi). 형식이 아니면 None."""
+@dataclass(frozen=True)
+class RssiSample:
+    slot_id: int
+    rssi: float
+    t: float
+
+
+def parse_line(line: str) -> Optional[RssiSample]:
+    """rx_scan.py 한 줄 `ISO시각, 칸번호, RSSI`를 측정 시각과 함께 파싱한다."""
     parts = [p.strip() for p in line.split(",")]
     if len(parts) != 3:
         return None
     try:
-        return int(parts[1]), float(parts[2])
+        measured_at = datetime.fromisoformat(parts[0]).timestamp()
+        return RssiSample(int(parts[1]), float(parts[2]), measured_at)
     except ValueError:
         return None
 
@@ -74,7 +84,7 @@ class RssiClient:
             except OSError:
                 continue
 
-    def poll(self) -> List[Tuple[int, float]]:
+    def poll(self) -> List[RssiSample]:
         """지금까지 도착한 RSSI를 모두 꺼낸다. 접속 전이거나 없으면 빈 리스트."""
         if self.sock is None:
             self._connect()
@@ -105,3 +115,9 @@ class RssiClient:
             self.sock.close()
         print("[rssi] 중계기 연결 끊김, 다시 접속 시도", flush=True)
         self.sock, self.connected_host = None, None
+
+    def close(self) -> None:
+        """앱 종료·재시작 때 TCP 소켓을 즉시 닫는다."""
+        if self.sock is not None:
+            self.sock.close()
+        self.sock, self.connected_host, self._buf = None, None, b""

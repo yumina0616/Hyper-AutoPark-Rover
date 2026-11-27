@@ -57,6 +57,7 @@ flowchart LR
     TOF_F -- "I2C" --> SENS_MCU
     TOF_R -. "I2C" .-> SENS_MCU
     SENS_MCU -- "Bridge: distance(dist_mm, status)" --> SM
+    SAFETY -- "Bridge: safety(reason)" --> SM
     SM -- "Bridge: drive(left, right)" --> MOTION_MCU
     SENS_MCU --> SAFETY
     SAFETY -- "정지 우선" --> MOTION_MCU

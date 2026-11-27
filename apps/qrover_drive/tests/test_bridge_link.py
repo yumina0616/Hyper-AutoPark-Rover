@@ -10,7 +10,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from bridge_link import RANGE_ERROR, RANGE_OK, BridgeLink, LinkConfig  # noqa: E402
+from bridge_link import (  # noqa: E402
+    RANGE_ERROR,
+    RANGE_OK,
+    SAFETY_EMERGENCY,
+    SAFETY_PASS,
+    BridgeLink,
+    LinkConfig,
+)
 
 
 class FakeClock:
@@ -120,6 +127,26 @@ class DistanceTest(unittest.TestCase):
         link, _, _ = make()
         link.on_distance(-1, RANGE_ERROR)
         self.assertEqual(link.latest_distance().status, RANGE_ERROR)
+
+
+class SafetyFeedbackTest(unittest.TestCase):
+    def test_none_before_first_safety_feedback(self):
+        link, _, _ = make()
+        self.assertIsNone(link.latest_safety())
+
+    def test_fresh_safety_feedback(self):
+        link, _, clock = make()
+        link.on_safety(SAFETY_PASS)
+        reading = link.latest_safety()
+        self.assertEqual((reading.reason, reading.t, reading.stale), (SAFETY_PASS, clock.now, False))
+
+    def test_emergency_feedback_becomes_stale(self):
+        link, _, clock = make()
+        link.on_safety(SAFETY_EMERGENCY)
+        clock.now += link.cfg.stale_sec + 0.01
+        reading = link.latest_safety()
+        self.assertEqual(reading.reason, SAFETY_EMERGENCY)
+        self.assertTrue(reading.stale)
 
 
 if __name__ == "__main__":

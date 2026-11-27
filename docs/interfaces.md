@@ -81,11 +81,16 @@
 
 | 이름 | 방향 | 인자 | 주기 | 상태 |
 |---|---|---|---|---|
-| `distance` | MCU → Python | `dist_mm`(int), `status`(int) | 측정할 때마다 | 선택 방향 |
-| `drive` | Python → MCU | `left`, `right` (`-255 ~ 255`) | 바뀔 때 + `HEARTBEAT_SEC`마다 | 선택 방향 |
+| `distance` | MCU → Python | `dist_mm`(int), `status`(int) | 측정할 때마다 | 구현 |
+| `safety` | MCU → Python | `SafetyReason`(int) | MCU 안전판단 때마다 | 구현 |
+| `drive` | Python → MCU | `left`, `right` (`-255 ~ 255`) | 바뀔 때 + `HEARTBEAT_SEC`마다 | 구현 |
 | `spin` | Python → MCU | `direction`, `pwm`, `max_ms` (예시) | 회전 시작할 때 | 미정 ([#8](https://github.com/yumina0616/Hyper-AutoPark-Rover/issues/8)) |
 
 `drive`는 값이 그대로여도 `HEARTBEAT_SEC`마다 다시 보냅니다. 그러지 않으면 MCU watchdog이 "Python이 멈췄다"고 판단해 정지합니다.
+
+`safety` 값은 `0=PASS`, `1=NO_COMMAND`, `2=WATCHDOG`,
+`3=SENSOR_ERROR`, `4=EMERGENCY`입니다. Python 전체 상태 기계는 실제 MCU가
+명령을 차단했다는 피드백을 받으면 시간 기반 위치 추정을 계속하지 않고 `ABORT`합니다.
 
 이전 코드의 `set_vision_block`, `set_target`, `telemetry`는 이 프로젝트에서 쓰지 않습니다.
 
