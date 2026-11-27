@@ -42,7 +42,7 @@ class SearchPhase(str, Enum):
 class SearchConfig:
     search_pwm: int = 100           # 탐색 직진 속도          TODO: 실험으로 결정 (MIN_PWM 이상)
     approach_pwm: int = 80          # 접근 감속 속도          TODO: 실험으로 결정
-    approach_rssi: Optional[float] = -70.0  # 이 이상이면 감속. None이면 감속 안 함   TODO: 실험으로 결정
+    approach_rssi: Optional[float] = -76.0  # 이 이상이면 감속 (실측: 칸 조금 전 약 -78, 칸 앞 약 -72). None이면 감속 안 함   TODO: 실측 확정
     search_timeout: float = 30.0    # 출발 후 이 시간 안에 못 찾으면 중단 (#7 SEARCH_TIMEOUT)   TODO
     return_timeout: float = 10.0    # 복귀 시간이 이보다 길면 이상한 것 → 중단 (#7 RETURN_TIMEOUT) TODO
     trim_left: int = 0              # 직진할 때 휘는 것 보정 (#9 TRIM)   TODO: 실험으로 결정
