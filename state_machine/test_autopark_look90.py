@@ -137,6 +137,27 @@ class LookDecisionTest(unittest.TestCase):
         self.assertEqual(len(turns), ctrl.cfg.pulses_per_90 - k)        # 직각에서 벗어난 만큼 덜 돈다
         self.assertIn("앞으로 290mm", ctrl._realign_plan[-1][3])
 
+    def test_no_camera_frames_stops_instead_of_moving(self):
+        # 영상이 한 장도 안 들어오면 "마커 없음"으로 보고 이동하면 안 된다
+        ctrl = look_ctrl()
+        t, out = 10.0, None
+        while t < 10.0 + ctrl.cfg.look_sec + ctrl.cfg.look_frame_wait_sec + 0.5:
+            out = ctrl.step(t, marker_frame=None, distance=DistanceObservation(400, RANGE_OK, t),
+                            safety=SafetyObservation(SAFETY_PASS, t))
+            self.assertEqual((out.left, out.right), (0, 0))
+            if out.phase != AutoParkPhase.ARUCO_ALIGN:
+                break
+            t += 0.1
+        self.assertEqual(out.phase, AutoParkPhase.ABORT)
+        self.assertIn("카메라 영상", out.reason)
+
+    def test_old_frames_do_not_count(self):
+        ctrl = look_ctrl()
+        old = MarkerFrame(seq=1, t=0.0, markers=[], width_px=W, height_px=H)   # 10초 전 영상
+        out = ctrl.step(12.0, marker_frame=old, distance=DistanceObservation(400, RANGE_OK, 12.0),
+                        safety=SafetyObservation(SAFETY_PASS, 12.0))
+        self.assertEqual(ctrl._look_frames, 0)
+
     def test_gives_up_after_max_moves(self):
         ctrl = look_ctrl()
         ctrl.look_moves = ctrl.cfg.max_look_moves

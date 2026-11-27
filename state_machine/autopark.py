@@ -115,6 +115,8 @@ class AutoParkConfig:
     turn_pause_sec: float = 0.3                 # 90° 돌 때 한 번 돌고 쉬는 시간
     look_sec: float = 1.5                       # 멈춰서 마커를 보는 시간 (이 동안의 평균으로 판단)
     look_min_frames: int = 3                    # 자세를 믿으려면 최소 이만큼 봐야 함
+    look_frame_wait_sec: float = 3.0            # 보는 동안 새 영상이 하나도 없으면 이만큼 더 기다리고 중단
+    look_frame_max_age_sec: float = 1.0         # 이보다 오래된 영상은 안 본 것으로 친다
     wall_yaw_tol_deg: float = 6.0               # 벽과 이 이상 틀어지면 조금 돌아서 바로잡음
     max_yaw_fixes: int = 3                      # 한 번 볼 때 방향 바로잡기 최대 횟수
     max_look_moves: int = 6                     # 앞뒤로 옮겨서 다시 보기 최대 횟수
@@ -260,6 +262,7 @@ class AutoParkController:
         self._look_started: Optional[float] = None
         self._look_seq: Optional[int] = None
         self._look_obs: list[tuple[int, float, Optional[float], Optional[float]]] = []  # (id, 크기, yaw, 옆)
+        self._look_frames = 0                   # 보는 동안 받은 새 영상 수
         self._yaw_fixes = 0
         self.look_moves = 0
         self.last_look: Optional[str] = None    # 마지막 판단 내용 (로그·테스트용)
@@ -582,6 +585,7 @@ class AutoParkController:
         self._look_started = None
         self._look_seq = None
         self._look_obs = []
+        self._look_frames = 0
         if stage == "TURN_IN":
             self._yaw_fixes = 0
             self._peek = 0
@@ -625,8 +629,15 @@ class AutoParkController:
             self._look_started = now
             self._look_obs = []
             self._look_seq = None
-        if marker_frame is not None and marker_frame.seq != self._look_seq:
+            self._look_frames = 0
+        fresh = (
+            marker_frame is not None
+            and marker_frame.seq != self._look_seq
+            and now - marker_frame.t <= self.cfg.look_frame_max_age_sec
+        )
+        if fresh:
             self._look_seq = marker_frame.seq
+            self._look_frames += 1
             for m in marker_frame.markers:
                 mid = int(getattr(m, "id", -1))
                 if not 0 <= mid <= 4:
@@ -642,8 +653,14 @@ class AutoParkController:
                     if pose is not None:
                         yaw, lat = pose.yaw_deg, pose.offset_mm
                 self._look_obs.append((mid, float(getattr(m, "size_px", 0.0)), yaw, lat))
-        if now - self._look_started < self.cfg.look_sec:
-            return self._stop(f"멈춰서 마커 보기 ({len(self._look_obs)}개)")
+        waited = now - self._look_started
+        if waited < self.cfg.look_sec:
+            return self._stop(f"멈춰서 마커 보기 (영상 {self._look_frames}장, 마커 {len(self._look_obs)}개)")
+        if self._look_frames == 0:
+            # 영상이 안 들어오는데 "마커가 없다"고 판단하면 엉뚱하게 이동한다 (2026-11-27 실주행)
+            if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
+                return self._stop("카메라 영상 기다리는 중")
+            return self._abort("카메라 영상이 안 들어옴 (마커를 볼 수 없어 멈춤)")
         return self._decide_look(now)
 
     def _decide_look(self, now: float) -> AutoParkOutput:
