@@ -260,6 +260,7 @@ class AutoParkController:
         self._turn_since_target = 0
         self._target_recovery: Optional[tuple[int, int]] = None  # 첫 방향, 회전 횟수
         self._wall_turn_active = False
+        self._look_requires_parking_tolerance = False
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
@@ -512,7 +513,9 @@ class AutoParkController:
             self._pose_target_seen = 0
             return self._stop("확인 지점 도착, 기울기 확인")
 
-        out = self.parking_controller.update(marker, distance, now)
+        out = self.parking_controller.update(
+            marker, distance, now, straight_approach=self.cfg.align_mode == "look90"
+        )
         if out.state == ParkingState.PARKED:
             self.phase = AutoParkPhase.PARKED
             return self._stop("주차 완료")
@@ -523,7 +526,8 @@ class AutoParkController:
             ):
                 # 벽 가까이에서 기울어짐 → 포기하지 않고 뒤로 빠져 다시 정렬
                 return self._start_realign(
-                    now, marker.lateral_mm, f"정지 위치에서 기울어짐 ({marker.yaw_deg:+.1f}°)"
+                    now, marker.lateral_mm,
+                    f"정지 위치 정렬 오차 (기울기 {marker.yaw_deg:+.1f}°, 옆 {marker.lateral_mm:+.0f}mm)"
                 )
             return self._abort(
                 f"전면 주차 안전 정지 ({self.parking_controller.stop_reason or '이유 없음'})"
@@ -577,7 +581,7 @@ class AutoParkController:
             self._pose_checked = True
             self.phase = AutoParkPhase.FRONT_PARK
             return self._stop(f"기울기 통과 ({yaw:+.1f}°, 옆 {lateral:+.0f}mm), 주차 계속")
-        return self._start_realign(now, lateral, f"기울기 {yaw:+.1f}°, 옆 {lateral:+.0f}mm")
+        return self._start_realign(now, lateral, f"기울기 {yaw:+.1f}°, 옆 {lateral:+.0f}mm", distance)
 
     def _pose_check_counts(self) -> str:
         valid = len(self._pose_samples)
@@ -589,20 +593,32 @@ class AutoParkController:
         )
 
     # ── 재정렬 ────────────────────────────────────────────────
-    def _start_realign(self, now: float, lateral_mm: float, why: str) -> AutoParkOutput:
+    def _start_realign(
+        self, now: float, lateral_mm: float, why: str, distance: Optional[DistanceObservation] = None
+    ) -> AutoParkOutput:
         if self.realign_attempts >= self.cfg.max_realign_attempts:
             return self._abort(f"재정렬 {self.cfg.max_realign_attempts}회 넘음: {why}")
         self.realign_attempts += 1
         if self.cfg.align_mode == "look90":
+            self._pose_checked = False
+            self._parking_started_at = None
+            self.parking_controller.reset()
+            self.reason = why
+            if (
+                distance is not None
+                and distance.status == RANGE_OK
+                and distance.dist_mm > self.parking_controller.cfg.slowdown_distance_mm
+            ):
+                self.phase = AutoParkPhase.ARUCO_ALIGN
+                self._yaw_fixes = 0
+                self._look_requires_parking_tolerance = True
+                self._enter_look("LOOK")
+                return self._stop("현재 위치에서 정렬 다시 확인", why)
             # 벽에서 뒤로 빠진 뒤, 벽을 본 채로 다시 보기 → 방향·옆 오차를 90° 방식으로 바로잡는다
             back = self.cfg.realign_pwm
             self._realign_plan = [(now + self.cfg.realign_backup_sec, -back, -back, "벽에서 뒤로 빠짐")]
             self._after_plan_stage = "LOOK"
             self.phase = AutoParkPhase.REALIGN
-            self._pose_checked = False
-            self._parking_started_at = None
-            self.parking_controller.reset()
-            self.reason = why
             return self._step_realign(now, None)
 
         pwm = self.cfg.realign_pwm
@@ -849,8 +865,8 @@ class AutoParkController:
         yaws = self._look_yaws
 
         # 1) 벽과 틀어졌으면 (어느 마커든 벽은 같은 면) 조금 돌아서 바로잡는다
-        if len(yaws) >= self.cfg.look_min_frames:
-            yaw = sum(yaws) / len(yaws)
+        yaw = sum(yaws) / len(yaws) if len(yaws) >= self.cfg.look_min_frames else None
+        if yaw is not None:
             if abs(yaw) > self.cfg.wall_yaw_tol_deg:
                 if self._yaw_fixes >= self.cfg.max_yaw_fixes:
                     return self._abort(f"회전 보정 후에도 벽과 {yaw:+.1f}° 틀어짐")
@@ -871,12 +887,15 @@ class AutoParkController:
                 self.last_look = "목표 마커 보임 (자세 정보 부족) → 접근"
                 return self._start_front_park(now, self.last_look)
             lat = sum(tgt_lats) / len(tgt_lats)
-            if abs(lat) <= self.cfg.approach_lateral_tol_mm:
+            lateral_tol = self.cfg.approach_lateral_tol_mm
+            if self._look_requires_parking_tolerance:
+                lateral_tol = min(lateral_tol, self.parking_controller.cfg.lateral_tol_mm)
+            if abs(lat) <= lateral_tol:
                 self.last_look = f"목표 마커 정면 (옆 {lat:+.0f}mm) → 접근"
                 return self._start_front_park(now, self.last_look)
             move = -self._travel_sign() * lat
             self.last_look = f"목표 마커가 옆으로 {lat:+.0f}mm → 통로 따라 {move:+.0f}mm 이동"
-            return self._look_move(now, move)
+            return self._look_move(now, move, wall_yaw=yaw)
 
         # 3) 다른 번호만 보이면: 가장 가까운(크게 보인) 마커 기준으로 칸 차이 + 그 마커와의 옆 오차
         others: dict[int, list] = {}
@@ -895,7 +914,7 @@ class AutoParkController:
             move = max(-self.cfg.slot_pitch_mm, min(self.cfg.slot_pitch_mm, move))
             self.last_look = (f"목표 안 보임, 가장 가까운 {nearest}번 기준 {diff:+d}칸"
                               f" → 통로 따라 {move:+.0f}mm 이동")
-            return self._look_move(now, move)
+            return self._look_move(now, move, wall_yaw=yaw)
 
         # 4) 아무것도 안 보이면: 벽을 제대로 보고 있으면 마커가 최소 하나는 보여야 한다
         #    (50cm에서 화면 폭 약 41cm, 마커 간격 17cm). 90°가 빗나갔을 수 있으니
@@ -977,6 +996,7 @@ class AutoParkController:
         if self._parking_started_at is None:
             self._parking_started_at = now
         self._parking_marker_missing_since = None
+        self._look_requires_parking_tolerance = False
         self.parking_controller.reset()
         self.reason = why
         return self._stop("마커 정면 확인, 전면 접근 시작", why)

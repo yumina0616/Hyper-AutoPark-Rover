@@ -31,7 +31,7 @@ class FrontParkingConfig:
     target_marker_id: int = 0
     # 2026-11-24 camera_view 실측 (마커 5cm, 640x480): "적당한 정지 위치"가 마커 약 348px,
     # 카메라-벽 약 113mm. 멈추면서 밀리는 거리를 생각해 조금 앞(약 130mm)에서 멈추기 시작한다.
-    park_distance_mm: int = 130          # ToF 정지 거리 조건 (TODO: 같은 위치의 ToF 값 실측 후 보정)
+    park_distance_mm: int = 150          # ToF 정지 거리 조건 (TODO: 같은 위치의 ToF 값 실측 후 보정)
     emergency_distance_mm: int = 90      # 무조건 안전 정지 거리 (TODO: 실물 보정)
     marker_stop_side_px: float = 300.0   # 640x480·마커 5cm 기준 정지 크기 (약 130mm, TODO: 실측 보정)
     # ToF와 카메라는 붙은 위치가 달라 정지 거리에서 몇 %씩 어긋난다. ToF가 정지 거리 안일 때
@@ -112,6 +112,8 @@ class FrontParkingController:
         marker: Optional[MarkerObservation],
         distance: Optional[DistanceObservation],
         now: float,
+        *,
+        straight_approach: bool = False,
     ) -> StepOutput:
         # 1. 완료(PARKED) 또는 안전 래치(SAFETY_STOP) 상태는 리셋 전까지 정지 유지
         if self.state in (ParkingState.PARKED, ParkingState.SAFETY_STOP):
@@ -207,6 +209,11 @@ class FrontParkingController:
             or (marker.side_px >= self.cfg.marker_stop_side_px * 0.75)
         )
         speed = self.cfg.slow_speed if slowdown else self.cfg.drive_speed
+
+        if straight_approach:
+            self.state = ParkingState.APPROACH
+            pwm = _clamp_pwm(speed)
+            return StepOutput(pwm, pwm, self.state, 0)
 
         if abs(marker.offset_px) > self.cfg.pivot_offset_px:
             if tof_ok and distance.dist_mm <= self.cfg.slowdown_distance_mm:
