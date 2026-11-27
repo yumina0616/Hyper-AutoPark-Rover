@@ -58,22 +58,33 @@ def search_until_research(ctrl, ids=()):
 
 
 class ResearchTest(unittest.TestCase):
-    def test_searches_left_first(self):
+    def test_searches_left_in_short_pulses(self):
         ctrl = aligning()
+        p = ctrl.cfg.search_pulse_pwm
+        on, off = ctrl.cfg.search_pulse_on_sec, ctrl.cfg.search_pulse_off_sec
         out = step(ctrl, 10.0)
-        p = ctrl.cfg.marker_search_pwm
-        self.assertEqual((out.left, out.right), (-p, p))
+        self.assertEqual((out.left, out.right), (-p, p))                 # 짧게 왼쪽으로 돌고
+        out = step(ctrl, 10.0 + on + 0.05)
+        self.assertEqual((out.left, out.right), (0, 0))                  # 멈춰서 보기
+        out = step(ctrl, 10.0 + on + off + 0.01)
+        self.assertEqual((out.left, out.right), (-p, p))                 # 다시 짧게
+        self.assertEqual(ctrl.search_pulses, 2)
 
-    def test_not_found_turns_back_moves_forward_and_searches_again(self):
+    def test_not_found_turns_back_same_pulses_moves_forward_and_searches_again(self):
         ctrl = aligning()
+        cfg = ctrl.cfg
         t, out = search_until_research(ctrl)
         self.assertEqual(out.phase, AutoParkPhase.REALIGN)
-        self.assertGreaterEqual(t - 10.0, ctrl.cfg.marker_search_sec)   # 정해진 시간만큼 돈 뒤
-        p = ctrl.cfg.marker_search_pwm
+        p = cfg.search_pulse_pwm
         self.assertEqual((out.left, out.right), (p, -p))                 # 통로 방향(오른쪽)으로 되돌아 회전
         self.assertIn("목표 ID 1 못 찾음", out.reason)
 
-        back_turn_end = t + ctrl.cfg.marker_search_sec
+        # 탐색에서 돈 횟수와 같은 횟수만큼, 같은 세기·시간으로 반대로 돈다
+        turn_back = [seg for seg in ctrl._realign_plan if seg[1] != 0 and seg[1] == -seg[2]]
+        self.assertEqual(len(turn_back), cfg.search_max_pulses)
+        self.assertTrue(all(seg[1] == p for seg in turn_back))
+
+        back_turn_end = t + cfg.search_max_pulses * (cfg.search_pulse_on_sec + cfg.search_pulse_off_sec)
         move = step(ctrl, back_turn_end + 0.05)
         v = ctrl.cfg.realign_pwm
         self.assertEqual((move.left, move.right), (v, v))                # 앞으로 한 칸
@@ -100,6 +111,12 @@ class ResearchTest(unittest.TestCase):
         v = ctrl.cfg.realign_pwm
         self.assertEqual((last[1], last[2]), (-v, -v))
         self.assertIn("뒤로 1칸", last[3])
+
+    def test_ignores_ids_outside_slots(self):
+        # 배경에서 잘못 잡힌 17번 같은 번호는 재탐색 판단에 쓰지 않는다
+        ctrl = aligning(order=(3, 4, 2, 0, 1))
+        step(ctrl, 10.0, ids=(17, 0))
+        self.assertEqual(ctrl._seen_other_ids, [0])
 
     def test_unknown_order_defaults_to_one_slot_forward(self):
         ctrl = aligning()

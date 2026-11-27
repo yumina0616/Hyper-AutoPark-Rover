@@ -65,9 +65,15 @@ class AutoParkConfig:
     # 2026-11-27 실주행: 탐색 회전 60은 너무 빨라 마커를 못 잡고 정렬 시간 초과 → 회전 속도 절반.
     # 느려진 만큼 탐색·정렬 제한 시간을 늘렸다. 30이 바닥에서 안 돌면 올릴 것 (TODO: MIN_PWM 실측)
     marker_search_pwm: int = 30
-    # 한 번에 돌며 찾는 시간. 못 찾으면 통로 방향으로 되돌아 이동한 뒤 다시 찾는다(재탐색).
-    # PWM 30에서 약 130° 정도를 노린 값 (재정렬 90°=PWM 40·1.8초 기준 환산) TODO: 실측
-    marker_search_sec: float = 3.5
+    marker_search_sec: float = 3.5               # (끊어 돌기를 쓰면 search_max_pulses가 대신 정한다)
+    # 탐색 회전은 "짧게 돌고 → 멈춰서 보기"를 반복한다 (2026-11-27 실주행 영상).
+    # PWM 30으로 계속 돌리면 바퀴가 걸렸다 미끄러져 각도가 매번 달랐고, 같은 시간만큼 되돌아
+    # 돌아도 방향이 안 맞아 재탐색할수록 직선에서 벗어났다. 한 번에 같은 양만큼 돌게 하고
+    # 몇 번 돌았는지 세어서, 되돌아갈 때 같은 횟수만큼 반대로 돈다.
+    search_pulse_pwm: int = 50                  # 한 번 돌 때 세기 (걸리지 않을 만큼) TODO: 실측
+    search_pulse_on_sec: float = 0.15           # 한 번 도는 시간 TODO: 실측
+    search_pulse_off_sec: float = 0.35          # 멈춰서 카메라로 보는 시간
+    search_max_pulses: int = 12                 # 이만큼 돌아도 목표 ID가 없으면 재탐색 TODO: 실측(각도)
     align_timeout_sec: float = 25.0
     # 재탐색: 목표 ID를 못 찾았을 때 몇 칸 앞/뒤로 갈지 정하는 정보
     # marker_order = 진행 방향으로 지나가는 실제 마커 순서 (예: (2, 3, 4, 0, 1)). 비어 있으면
@@ -168,7 +174,7 @@ class AutoParkController:
                 search_if_missing=True,
                 search_direction=self.cfg.marker_search_direction,
                 search_pwm=self.cfg.marker_search_pwm,
-                search_sec=self.cfg.marker_search_sec,
+                search_sec=self.cfg.align_timeout_sec,   # 탐색 종료는 끊어 돌기 횟수로 정한다
                 continue_on_wrong_marker=True,
                 reacquire_if_lost=True,
             ),
@@ -204,6 +210,7 @@ class AutoParkController:
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
+        self.search_pulses = 0                  # 이번 탐색에서 돈 횟수 (되돌아갈 때 같은 횟수)
         self._realign_plan: list[tuple[float, int, int, str]] = []  # (끝 시각, L, R, 설명)
         self.last_pose: Optional[tuple[float, float]] = None        # 마지막 자세 확인 평균
         self.parking_controller.reset()
@@ -323,7 +330,8 @@ class AutoParkController:
         if marker_frame is not None:
             for m in marker_frame.markers:
                 mid = int(getattr(m, "id", -1))
-                if mid != self.target_slot:
+                # 배경에서 잘못 잡힌 번호(예: 17)는 버린다. 칸 번호는 0~4뿐이다.
+                if mid != self.target_slot and 0 <= mid <= 4:
                     if mid in self._seen_other_ids:
                         self._seen_other_ids.remove(mid)
                     self._seen_other_ids.append(mid)
@@ -334,15 +342,11 @@ class AutoParkController:
             and (out.left != 0 or out.right != 0)
         ):
             return self._abort("벽과 가까워 정렬 회전을 중단")
-        searched = now - self.align_stage.started_at
-        if (
-            not self.align_stage.has_seen_target
-            and (
-                (out.state == "MARKER_MISSING" and searched >= self.cfg.marker_search_sec)
-                or out.state == "TIMEOUT"
-            )
-        ):
-            return self._start_research(now, min(searched, self.cfg.marker_search_sec))
+        if not self.align_stage.has_seen_target:
+            if out.state == "TIMEOUT":
+                return self._start_research(now)
+            if out.state in ("SEARCHING", "SEARCHING_WRONG_MARKER"):
+                return self._search_pulse(now, out)
         if out.state == "ALIGNED":
             self.phase = AutoParkPhase.FRONT_PARK
             if self._parking_started_at is None:
@@ -496,6 +500,22 @@ class AutoParkController:
         self.reason = why
         return self._step_realign(now, None)
 
+    # ── 끊어 돌기 탐색 ─────────────────────────────────────────
+    def _search_pulse(self, now: float, out) -> AutoParkOutput:
+        cycle = self.cfg.search_pulse_on_sec + self.cfg.search_pulse_off_sec
+        elapsed = max(0.0, now - self.align_stage.started_at)
+        k = int(elapsed // cycle)              # 지금이 몇 번째 돌기인지 (0부터)
+        if k >= self.cfg.search_max_pulses:
+            self.search_pulses = self.cfg.search_max_pulses
+            return self._start_research(now)
+        self.search_pulses = k + 1
+        sign = -1 if out.left < 0 else 1       # 탐색 방향 (왼쪽 탐색이면 왼쪽 바퀴 -)
+        if elapsed - k * cycle < self.cfg.search_pulse_on_sec:
+            p = self.cfg.search_pulse_pwm
+            return AutoParkOutput(self.phase, sign * p, -sign * p, out.state,
+                                  f"끊어 돌기 {k + 1}/{self.cfg.search_max_pulses}")
+        return AutoParkOutput(self.phase, 0, 0, out.state, "멈춰서 마커 확인")
+
     # ── 재탐색 (목표 ID를 못 찾음) ─────────────────────────────
     def research_slots(self) -> int:
         """몇 칸 이동할지. + = 진행 방향(앞), - = 뒤. 본 마커 번호와 실제 순서로 정한다."""
@@ -508,7 +528,7 @@ class AutoParkController:
                         return diff
         return 1
 
-    def _start_research(self, now: float, rotated_sec: float) -> AutoParkOutput:
+    def _start_research(self, now: float) -> AutoParkOutput:
         if self.research_attempts >= self.cfg.max_research_attempts:
             return self._abort(f"목표 ID {self.target_slot} 마커를 {self.research_attempts}번 다시 찾아도 못 찾음")
         self.research_attempts += 1
@@ -517,16 +537,20 @@ class AutoParkController:
         self._seen_other_ids = []
 
         to_aisle = 1 if self.cfg.marker_search_direction == "left" else -1
-        turn = self.cfg.marker_search_pwm
+        turn = self.cfg.search_pulse_pwm
         move = self.cfg.realign_pwm * (1 if slots > 0 else -1)
         move_sec = abs(slots) * self.cfg.slot_pitch_mm / self.cfg.realign_mm_per_sec
         move_sec = min(6.0, max(self.cfg.realign_shift_min_sec, move_sec))
 
         t = now
         plan = []
-        if rotated_sec > 0:
-            t += rotated_sec
-            plan.append((t, to_aisle * turn, -to_aisle * turn, "통로 방향으로 되돌아 회전"))
+        n = self.search_pulses
+        for i in range(n):   # 탐색에서 돈 횟수만큼 같은 세기·시간으로 반대로 돈다
+            t += self.cfg.search_pulse_on_sec
+            plan.append((t, to_aisle * turn, -to_aisle * turn, f"통로 방향으로 되돌아 회전 {i + 1}/{n}"))
+            t += self.cfg.search_pulse_off_sec
+            plan.append((t, 0, 0, f"통로 방향으로 되돌아 회전 {i + 1}/{n}"))
+        self.search_pulses = 0
         t += move_sec
         where = "앞으로" if slots > 0 else "뒤로"
         plan.append((t, move, move, f"{where} {abs(slots)}칸 이동"))

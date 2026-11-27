@@ -220,7 +220,8 @@ class AutoParkFlowTest(unittest.TestCase):
         # 마커가 없으면 왼쪽으로 천천히 탐색 회전한다.
         searching = run_step(ctrl, 0.61, marker_frame=frame(1, 0.61))
         self.assertEqual(searching.detail, "SEARCHING")
-        self.assertEqual((searching.left, searching.right), (-60, 60))
+        p = ctrl.cfg.search_pulse_pwm           # 끊어 돌기: 첫 순간은 도는 중
+        self.assertEqual((searching.left, searching.right), (-p, p))
 
         # 마커를 발견해 두 개의 서로 다른 중앙 프레임으로 정렬을 확정한다.
         turning = run_step(ctrl, 0.70, marker_frame=frame(2, 0.70, err_x=0.5))
