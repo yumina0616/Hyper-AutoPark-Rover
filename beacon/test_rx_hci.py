@@ -16,6 +16,7 @@ from beacon.rx_hci import (
     LE_EXT_ADV_REPORT,
     beacon_lines,
     command_packet,
+    hci_filter_bytes,
     iter_adv_reports,
     parse_ibeacon,
 )
@@ -94,6 +95,20 @@ class ParseTest(unittest.TestCase):
 
 
 class CommandTest(unittest.TestCase):
+    def test_filter_matches_kernel_struct_size(self):
+        # 커널 struct hci_ufilter는 16바이트 (14바이트면 EINVAL)
+        import ctypes
+
+        class HciUfilter(ctypes.Structure):
+            _fields_ = [
+                ("type_mask", ctypes.c_uint32),
+                ("event_mask", ctypes.c_uint32 * 2),
+                ("opcode", ctypes.c_uint16),
+            ]
+
+        self.assertEqual(len(hci_filter_bytes()), ctypes.sizeof(HciUfilter))
+        self.assertEqual(hci_filter_bytes()[:4], (1 << 0x04).to_bytes(4, "little"))
+
     def test_scan_enable_packet_turns_off_duplicate_filter(self):
         # LE Set Scan Enable: opcode 0x200C, 파라미터 (enable=1, filter_duplicates=0)
         self.assertEqual(command_packet(0x08, 0x000C, b"\x01\x00"), b"\x01\x0c\x20\x02\x01\x00")

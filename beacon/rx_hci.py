@@ -61,6 +61,19 @@ def command_packet(ogf: int, ocf: int, params: bytes = b"") -> bytes:
     return struct.pack("<BHB", HCI_COMMAND_PKT, opcode(ogf, ocf), len(params)) + params
 
 
+def hci_filter_bytes() -> bytes:
+    """소켓이 받을 패킷 종류 (커널 struct hci_ufilter, 16바이트).
+
+    이벤트 패킷 중 Command Complete/Status와 LE Meta만 받는다.
+    C 구조체는 끝에 2바이트 빈칸이 있어서 16바이트다. 14바이트만 보내면 최신 커널이
+    EINVAL(Invalid argument)로 거부한다 (2026-11-27 UNO Q에서 확인).
+    """
+    type_mask = 1 << HCI_EVENT_PKT
+    ev_lo = (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS)
+    ev_hi = 1 << (EVT_LE_META - 32)
+    return struct.pack("<IIIH2x", type_mask, ev_lo, ev_hi, 0)
+
+
 # ── 광고 해석 (순수 함수, 칩 없이 테스트 가능) ─────────────────────────────
 
 def parse_ibeacon(adv_data: bytes) -> Optional[tuple[str, int, int]]:
@@ -170,15 +183,17 @@ class HciScanner:
         self.extended = False
 
     def open(self) -> None:
-        s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI)
-        s.bind((self.dev_id,))
-        sol_hci = getattr(socket, "SOL_HCI", 0)
-        hci_filter = getattr(socket, "HCI_FILTER", 2)
-        # 이벤트 패킷만, 그중 Command Complete/Status와 LE Meta만 받는다
-        type_mask = 1 << HCI_EVENT_PKT
-        ev_lo = (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS)
-        ev_hi = 1 << (EVT_LE_META - 32)
-        s.setsockopt(sol_hci, hci_filter, struct.pack("<IIIH", type_mask, ev_lo, ev_hi, 0))
+        steps = "소켓 만들기"
+        try:
+            s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI)
+            steps = f"hci{self.dev_id}에 연결"
+            s.bind((self.dev_id,))
+            steps = "수신 필터 설정"
+            sol_hci = getattr(socket, "SOL_HCI", 0)
+            hci_filter = getattr(socket, "HCI_FILTER", 2)
+            s.setsockopt(sol_hci, hci_filter, hci_filter_bytes())
+        except OSError as exc:
+            raise OSError(exc.errno, f"{steps} 단계에서 실패: {exc.strerror}") from exc
         s.settimeout(1.0)
         self.sock = s
 
