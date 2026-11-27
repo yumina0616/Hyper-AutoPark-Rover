@@ -120,7 +120,7 @@ class AutoParkConfig:
     look_frame_wait_sec: float = 3.0            # 보는 동안 새 영상이 하나도 없으면 이만큼 더 기다리고 중단
     look_frame_max_age_sec: float = 1.0         # 이보다 오래된 영상은 안 본 것으로 친다
     wall_yaw_tol_deg: float = 6.0               # 벽과 이 이상 틀어지면 조금 돌아서 바로잡음
-    max_yaw_fixes: int = 3                      # 한 번 볼 때 방향 바로잡기 최대 횟수
+    max_yaw_fixes: int = 5                      # 벽을 볼 때 한 번씩 돌고 확인하는 최대 횟수
     max_look_moves: int = 6                     # 앞뒤로 옮겨서 다시 보기 최대 횟수
     peek_pulses: int = 3                        # 아무것도 안 보이면 좌우로 이만큼(약 15°) 돌아서 더 본다
 
@@ -266,6 +266,7 @@ class AutoParkController:
         self._look_seq: Optional[int] = None
         self._look_obs: list[tuple[int, float, Optional[float], Optional[float]]] = []  # (id, 크기, yaw, 옆)
         self._look_poses: dict[int, list[Pose]] = {}
+        self._look_yaws: list[float] = []
         self._wall_before_move: Optional[tuple[dict[int, list[Pose]], float, float]] = None
         self._look_frames = 0                   # 보는 동안 받은 새 영상 수
         self._yaw_fixes = 0
@@ -591,6 +592,7 @@ class AutoParkController:
         self._look_seq = None
         self._look_obs = []
         self._look_poses = {}
+        self._look_yaws = []
         self._look_frames = 0
         if stage == "TURN_IN":
             self._yaw_fixes = 0
@@ -668,6 +670,8 @@ class AutoParkController:
                 self._look_obs.append((mid, float(getattr(m, "size_px", 0.0)), yaw, lat))
             for mid, pose in frame_poses.items():
                 self._look_poses.setdefault(mid, []).append(pose)
+            if frame_poses:
+                self._look_yaws.append(median(pose.yaw_deg for pose in frame_poses.values()))
         waited = now - self._look_started
         if waited < self.cfg.look_sec:
             return self._stop(f"멈춰서 마커 보기 (영상 {self._look_frames}장, 마커 {len(self._look_obs)}개)")
@@ -676,23 +680,27 @@ class AutoParkController:
             if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
                 return self._stop("카메라 영상 기다리는 중")
             return self._abort("카메라 영상이 안 들어옴 (마커를 볼 수 없어 멈춤)")
+        if self._yaw_fixes and len(self._look_yaws) < self.cfg.look_min_frames:
+            if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
+                return self._stop("보정 회전 후 마커 각도 확인 대기")
+            return self._abort("보정 회전 후 마커 각도를 다시 확인할 수 없음")
         return self._decide_look(now)
 
     def _decide_look(self, now: float) -> AutoParkOutput:
         obs = self._look_obs
-        yaws = [y for _, _, y, _ in obs if y is not None]
+        yaws = self._look_yaws
         pcfg = self.parking_controller.cfg
 
         # 1) 벽과 틀어졌으면 (어느 마커든 벽은 같은 면) 조금 돌아서 바로잡는다
         if len(yaws) >= self.cfg.look_min_frames:
             yaw = sum(yaws) / len(yaws)
-            if abs(yaw) > self.cfg.wall_yaw_tol_deg and self._yaw_fixes < self.cfg.max_yaw_fixes:
+            if abs(yaw) > self.cfg.wall_yaw_tol_deg:
+                if self._yaw_fixes >= self.cfg.max_yaw_fixes:
+                    return self._abort(f"회전 보정 후에도 벽과 {yaw:+.1f}° 틀어짐")
                 self._yaw_fixes += 1
                 sign = 1 if yaw > 0 else -1          # yaw + = 오른쪽으로 돌아야 똑바름
-                per = 90.0 / self._pulses_for_90(sign)
-                n = max(1, round(abs(yaw) / per))
-                self.last_look = f"벽과 {yaw:+.1f}° 틀어짐 → {n}번 돌아 바로잡기"
-                plan, _ = self._pulse_plan(now, sign, n, "벽과 방향 맞추기")
+                self.last_look = f"벽과 {yaw:+.1f}° 틀어짐 → 1번 돌고 다시 확인"
+                plan, _ = self._pulse_plan(now, sign, 1, "벽과 방향 맞추기")
                 return self._run_plan(now, plan, "LOOK", self.last_look)
 
         if self._wall_before_move is not None:

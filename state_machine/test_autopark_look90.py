@@ -149,8 +149,19 @@ class LookDecisionTest(unittest.TestCase):
         p = ctrl.cfg.search_pulse_pwm
         self.assertEqual((out.left, out.right), (p, -p))                 # 오른쪽으로 바로잡기
         n = sum(1 for s in ctrl._realign_plan if s[1] != 0)
-        self.assertEqual(n, round(15 / (90 / ctrl.cfg.right_pulses_per_90)))
+        self.assertEqual(n, 1)
         self.assertEqual(ctrl._after_plan_stage, "LOOK")                 # 바로잡고 다시 보기
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)
+        out = look(ctrl, lambda t: [marker_at(0, 450, face_marker=False, turn_right_deg=15,
+                                              t=t, marker_id=0)], t0=now + 0.1)
+        self.assertEqual((out.left, out.right), (-p, p))                 # 새 영상에서 반대 오차
+        self.assertEqual(sum(1 for s in ctrl._realign_plan if s[1] != 0), 1)
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)
+        out = look(ctrl, lambda t: [marker_at(0, 450, face_marker=False, t=t, marker_id=0)],
+                   t0=now + 0.1)
+        self.assertEqual(out.phase, AutoParkPhase.FRONT_PARK)
 
     def test_only_other_marker_uses_order_and_its_offset(self):
         # 목표 0 안 보이고 3번이 30mm 옆에 보임. 순서 1,2,3,0,4 → 0은 3번보다 한 칸(170mm) 앞
