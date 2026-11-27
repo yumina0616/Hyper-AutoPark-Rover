@@ -30,19 +30,28 @@ class PeakConfig:
     # 초기값 근거: 가상 로버 시뮬레이션(state_machine/test_beacon_search.py)에서 RSSI 잡음 ±2/4/6dB로
     # 비교했을 때 가장 안정적이었던 값 (±6dB에서도 30번 중 26번이 비콘 앞 15cm 이내, 최대 26cm).
     # 0.5초 / 4dB / 0.6초는 잡음 ±4dB만 돼도 비콘 도착 전에 "지나쳤다"고 착각했다. 실물로 다시 확인할 것.
+    #
+    # 2026-11-27 실측(experiments/2026-11-27-beacon-rssi.md)으로 조정:
+    #   칸 정면 약 -72dBm, 조금 전 약 -78dBm, 같은 자리 잡음 약 ±5dB, 수신 초당 약 5회(rx_hci.py).
+    #   이 조건에 맞춘 시뮬레이션 50회: 6dB/최소 -90은 최대 150cm 빗나감(멀리서 잡음을 최댓값으로 착각),
+    #   평균 1.5초/4dB/최소 -80은 20cm 이내 44회, 최대 27cm.
 
     # 이 시간(초) 동안 받은 RSSI를 평균 낸다. 길수록 덜 흔들리지만 반응이 늦다
-    window_sec: float = 1.0        # TODO: 실물 RSSI로 결정
+    window_sec: float = 1.5        # TODO: 실측 반복으로 확정 (2026-11-27 1차 조정)
     # 평균을 내려면 창 안에 최소 이만큼의 샘플이 있어야 한다 (너무 적으면 판단 보류)
-    min_samples: int = 3           # TODO: 실험으로 결정
+    min_samples: int = 5           # 출발 직후 샘플 몇 개의 튀는 값을 최댓값으로 잡지 않게. TODO: 실험으로 결정
     # 최댓값보다 이만큼(dB) 떨어지면 "지나치는 중"으로 본다
-    drop_db: float = 6.0           # TODO: 실물 RSSI로 결정
+    drop_db: float = 4.0           # 칸 앞과 조금 전 차이가 약 6dB라 6dB면 놓칠 수 있음. TODO: 실측 확정
     # 위 상태가 이 시간(초) 동안 이어져야 "지나쳤다"로 확정 (순간적인 흔들림 무시)
     confirm_sec: float = 1.0       # TODO: 실물 RSSI로 결정
     # 최댓값이 이보다 약하면 아직 비콘 근처가 아니라고 보고 판단하지 않는다
-    min_peak_rssi: float = -90.0   # TODO: 실험으로 결정
+    min_peak_rssi: float = -80.0   # 칸 정면 실측 약 -72. 이보다 약한 최댓값은 잡음으로 봄. TODO: 실측 확정
     # 마지막 RSSI 이후 이 시간(초)이 지나면 "신호 끊김" (#7 BEACON_HOLD_SEC)
-    hold_sec: float = 1.0          # TODO: 실험으로 결정
+    hold_sec: float = 1.5          # rx_hci.py 실측 최대 끊김 0.52초. TODO: 실험으로 결정
+    # 창 안의 값을 하나로 줄이는 방법: "mean"(평균) 또는 "median"(중앙값).
+    # 실측 조건 시뮬레이션(잡음 ±5dB, 초당 5회, 0.3초 -15dB 가림 포함)에서는 평균이 더 정확했다
+    # (20cm 이내 69/80 vs 중앙값 60/80). 가림이 잦은 환경이면 중앙값을 다시 비교해 볼 것.
+    filter: str = "mean"
 
 
 class PeakDetector:
@@ -68,7 +77,15 @@ class PeakDetector:
 
         if len(self._samples) < self.cfg.min_samples:
             return False
-        self.filtered = sum(r for _, r in self._samples) / len(self._samples)
+        values = sorted(r for _, r in self._samples)
+        if self.cfg.filter == "median":
+            mid = len(values) // 2
+            self.filtered = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+        elif self.cfg.filter == "upper":
+            top = values[len(values) // 2:]          # 센 쪽 절반 (약한 채널 값에 덜 흔들림)
+            self.filtered = sum(top) / len(top)
+        else:
+            self.filtered = sum(values) / len(values)
 
         if self.passed:
             return False  # 이미 확정됐으면 최댓값을 더 갱신하지 않는다

@@ -15,9 +15,12 @@ import cv2
 import numpy as np
 
 # 저장소 루트(state_machine/, vision/)를 import 경로에 추가
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# App Lab 컨테이너에서는 이 파일이 /app/python/에 있어서 위로 3단계 폴더가 없다
+# (parents[3] → IndexError로 앱이 바로 꺼졌음, 2026-11-27). 그때는 복사본을 쓰므로 건너뛴다.
+_PARENTS = Path(__file__).resolve().parents
+if len(_PARENTS) > 3 and (_PARENTS[3] / "state_machine").is_dir():
+    if str(_PARENTS[3]) not in sys.path:
+        sys.path.insert(0, str(_PARENTS[3]))
 
 from state_machine.front_parking import (  # noqa: E402
     DistanceObservation,

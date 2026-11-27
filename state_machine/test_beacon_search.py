@@ -67,7 +67,8 @@ class PeakDetectorTest(unittest.TestCase):
         self.assertLess(abs(det.peak_time() - 10.0), 1.0)  # 최댓값 시각 오차 1초 이내
 
     def test_short_dip_does_not_trigger(self):
-        det = PeakDetector(PeakConfig(confirm_sec=0.6))
+        # "확인 시간" 장치 확인용: 평균 1초·6dB 창에서 0.3초 하락은 무시돼야 한다
+        det = PeakDetector(PeakConfig(window_sec=1.0, drop_db=6.0, confirm_sec=0.6, min_samples=3))
         t = 0.0
         for _ in range(10):
             det.update(t, -50); t += 0.1
@@ -76,6 +77,28 @@ class PeakDetectorTest(unittest.TestCase):
         for _ in range(10):  # 다시 회복
             det.update(t, -50); t += 0.1
         self.assertFalse(det.passed)
+
+    def test_default_ignores_brief_block_at_real_rate(self):
+        # 2026-11-27 기본값 + 실제 수신 속도(초당 5회): 사람이 잠깐 가려 1개가 -15dB 떨어져도 무시
+        det = PeakDetector()
+        t = 0.0
+        for _ in range(15):
+            det.update(t, -72); t += 0.2
+        det.update(t, -87); t += 0.2
+        for _ in range(15):
+            det.update(t, -72); t += 0.2
+        self.assertFalse(det.passed)
+
+    def test_default_detects_measured_pass(self):
+        # 실측 모양: 조금 전 -78 → 칸 앞 -72 → 지나서 -78 (초당 5회)
+        det = PeakDetector()
+        t, passed_at = 0.0, None
+        for r in [-78] * 10 + [-75] * 5 + [-72] * 10 + [-75] * 5 + [-78] * 15:
+            if det.update(t, r) and passed_at is None:
+                passed_at = t
+            t += 0.2
+        self.assertIsNotNone(passed_at)
+        self.assertLess(abs(det.peak_time() - 4.0), 1.0)   # 칸 앞(-72) 구간 3.0~4.8초
 
     def test_weak_signal_never_passes(self):
         det = PeakDetector(PeakConfig(min_peak_rssi=-80))
@@ -165,3 +188,50 @@ class BeaconSearchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReturnGainTest(unittest.TestCase):
+    def test_return_plan_scaled_by_gain(self):
+        # 최댓값 이후 2초를 달렸다면, 배율 1.25면 2.5초 후진한다
+        for gain, expected in [(1.0, 2.0), (1.25, 2.5)]:
+            s = BeaconSearch(config=SearchConfig(approach_rssi=None, return_gain=gain))
+            s.start(0.0)
+            s.step(0.0)
+            s.detector.peak_time = lambda: 1.0
+            s._begin_return(3.0)
+            self.assertAlmostEqual(s._return_plan[-1][0] - 3.0, expected)
+            self.assertLess(s._return_plan[-1][1], 0)
+
+
+class ArriveTest(unittest.TestCase):
+    def make(self):
+        s = BeaconSearch(config=SearchConfig(approach_rssi=None, arrive_rssi=-69.0, arrive_count=4))
+        s.start(0.0)
+        return s
+
+    def test_arrives_when_strong_values_repeat(self):
+        s = self.make()
+        t = 0.0
+        for r in [-78, -76, -69, -74, -68, -69, -67]:      # 1.5초 안에 -69 이상 4번
+            s.on_rssi(t, r)
+            out = s.step(t)
+            t += 0.2
+        self.assertEqual(out.phase, SearchPhase.DONE)
+        self.assertIn("목표 근처 도착", out.reason)
+        self.assertEqual((out.left, out.right), (0, 0))
+
+    def test_single_strong_spike_does_not_arrive(self):
+        s = self.make()
+        t = 0.0
+        for r in [-78, -76, -68, -77, -79, -76, -78, -66, -77]:
+            s.on_rssi(t, r)
+            out = s.step(t)
+            t += 0.2
+        self.assertNotEqual(out.phase, SearchPhase.DONE)
+
+    def test_off_by_default(self):
+        s = BeaconSearch(config=SearchConfig(approach_rssi=None))
+        s.start(0.0)
+        for i in range(6):
+            s.on_rssi(i * 0.1, -60)
+        self.assertFalse(s.arrived())

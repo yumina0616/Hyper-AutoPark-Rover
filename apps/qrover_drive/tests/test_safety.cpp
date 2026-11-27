@@ -48,6 +48,31 @@ int main() {
   check("watchdog이 센서 오류보다 우선",
         applySafety(fwd, true, 5000, -1, RANGE_ERROR, WD, EM), 0, 0, SAFETY_WATCHDOG);
 
+  // ── VL53L0X 상태 코드 분류 ──
+  struct Case { const char* name; int vl; int raw; int mm; int status; };
+  const Case cases[] = {
+    {"range 0 정상",                0, 245, 245, RANGE_OK},
+    {"range 1 sigma fail → 범위 밖", 1, 30,  -1,  RANGE_OUT_OF_RANGE},
+    {"range 2 signal fail → 범위 밖", 2, 8190, -1, RANGE_OUT_OF_RANGE},
+    {"range 3 너무 가까움 → 0mm",     3, 20,  0,   RANGE_OK},
+    {"range 4 phase fail → 범위 밖", 4, 8190, -1, RANGE_OUT_OF_RANGE},
+    {"range 5 hardware fail → 오류", 5, 0,   -1,  RANGE_ERROR},
+  };
+  for (const Case& c : cases) {
+    int mm = 123, st = 99;
+    classifyRange(c.vl, c.raw, mm, st);
+    bool ok = mm == c.mm && st == c.status;
+    std::printf("%s %s (got mm=%d status=%d)\n", ok ? "PASS" : "FAIL", c.name, mm, st);
+    if (!ok) failures++;
+  }
+  // 너무 가까움(0mm)이 실제로 전진 비상정지로 이어지는지
+  {
+    int mm, st;
+    classifyRange(3, 15, mm, st);
+    check("range 3 + 전진 → 비상정지",
+          applySafety(WheelCommand{100, 100}, true, 0, mm, st, WD, EM), 0, 0, SAFETY_EMERGENCY);
+  }
+
   std::printf("\n%s (%d failed)\n", failures ? "FAILED" : "ALL PASSED", failures);
   return failures ? 1 : 0;
 }

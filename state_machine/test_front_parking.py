@@ -23,8 +23,8 @@ class TestFrontParkingController(unittest.TestCase):
         # 같은 프레임(t=1.0)과 같은 ToF(t=1.0)가 반복되면 1번만 카운트되어야 한다
         for i in range(5):
             out = self.ctrl.update(
-                MarkerObservation(0, side_px=145.0, offset_px=5.0, t=1.0),
-                DistanceObservation(dist_mm=140, status=RANGE_OK, t=1.0),
+                MarkerObservation(0, side_px=310.0, offset_px=5.0, t=1.0),
+                DistanceObservation(dist_mm=120, status=RANGE_OK, t=1.0),
                 now=1.0 + i * 0.02,
             )
         self.assertEqual(out.parking_samples, 1)
@@ -36,8 +36,8 @@ class TestFrontParkingController(unittest.TestCase):
         for i in range(3):
             t = 1.0 + i * 0.1
             out = self.ctrl.update(
-                MarkerObservation(0, side_px=145.0, offset_px=0.0, t=t),
-                DistanceObservation(dist_mm=140, status=RANGE_OK, t=t),
+                MarkerObservation(0, side_px=310.0, offset_px=0.0, t=t),
+                DistanceObservation(dist_mm=120, status=RANGE_OK, t=t),
                 now=t,
             )
         self.assertEqual(out.parking_samples, 3)
@@ -126,10 +126,10 @@ class TestFrontParkingController(unittest.TestCase):
         self.assertEqual((lost_out.left, lost_out.right), (0, 0))
 
     def test_tof_close_with_small_marker_triggers_safety_stop(self) -> None:
-        # ToF만 150mm 이내인데 마커 크기 조건 미충족이면 SAFETY_STOP
+        # ToF만 정지 거리 안인데 마커 크기 조건 미충족이면 SAFETY_STOP
         out = self.ctrl.update(
             MarkerObservation(0, side_px=90.0, offset_px=0.0, t=1.0),
-            DistanceObservation(dist_mm=140, status=RANGE_OK, t=1.0),
+            DistanceObservation(dist_mm=120, status=RANGE_OK, t=1.0),
             now=1.0,
         )
         self.assertEqual(out.state, ParkingState.SAFETY_STOP)
@@ -138,8 +138,8 @@ class TestFrontParkingController(unittest.TestCase):
     def test_tof_close_and_vision_close_with_offset_stops_instead_of_turning(self) -> None:
         # 벽 가까이에서는 제자리 회전 중 모서리가 닿을 수 있으므로 안전 정지
         out = self.ctrl.update(
-            MarkerObservation(0, side_px=145.0, offset_px=55.0, t=1.0),
-            DistanceObservation(dist_mm=140, status=RANGE_OK, t=1.0),
+            MarkerObservation(0, side_px=310.0, offset_px=55.0, t=1.0),
+            DistanceObservation(dist_mm=120, status=RANGE_OK, t=1.0),
             now=1.0,
         )
         self.assertEqual(out.state, ParkingState.SAFETY_STOP)
@@ -148,7 +148,7 @@ class TestFrontParkingController(unittest.TestCase):
     def test_large_marker_with_invalid_tof_stops(self) -> None:
         # 영상은 이미 가깝다고 하는데 ToF가 유효하지 않으면 더 전진하지 않는다
         out = self.ctrl.update(
-            MarkerObservation(0, side_px=145.0, offset_px=0.0, t=1.0),
+            MarkerObservation(0, side_px=310.0, offset_px=0.0, t=1.0),
             DistanceObservation(dist_mm=-1, status=RANGE_OUT_OF_RANGE, t=1.0),
             now=1.0,
         )

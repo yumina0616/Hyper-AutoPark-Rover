@@ -9,9 +9,12 @@ from typing import Callable, Optional
 
 # App Lab 밖에서 테스트할 때 저장소 공용 모듈을 찾는다. App Lab에서는
 # scripts/sync_app_modules.py가 같은 python/ 아래로 복사한 모듈을 사용한다.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# App Lab 컨테이너에서는 이 파일이 /app/python/에 있어서 위로 3단계 폴더가 없다
+# (parents[3] → IndexError로 앱이 바로 꺼졌음, 2026-11-27). 그때는 복사본을 쓰므로 건너뛴다.
+_PARENTS = Path(__file__).resolve().parents
+if len(_PARENTS) > 3 and (_PARENTS[3] / "state_machine").is_dir():
+    if str(_PARENTS[3]) not in sys.path:
+        sys.path.insert(0, str(_PARENTS[3]))
 
 from bridge_link import BridgeLink  # noqa: E402
 from state_machine.autopark import (  # noqa: E402
@@ -37,8 +40,11 @@ class AutoParkRunner:
         on_status: Optional[Callable[[AutoParkOutput], None]] = None,
         auto_start: bool = True,
         camera_index: Optional[int] = None,
+        beacon_slot: Optional[int] = None,
     ) -> None:
         self.target_slot = int(target_slot)
+        # 따라갈 비콘의 칸 번호 (송신기 BEACON_MAJOR). 없으면 목표 마커 번호와 같다고 본다.
+        self.beacon_slot = self.target_slot if beacon_slot is None else int(beacon_slot)
         self.poll_rssi = poll_rssi
         self.controller = controller or AutoParkController(self.target_slot)
         if camera is None and camera_index is None:
@@ -82,7 +88,7 @@ class AutoParkRunner:
             else:
                 slot, rssi = sample
                 measured_t = now
-            if int(slot) == self.target_slot:
+            if int(slot) == self.beacon_slot:
                 target_rssi.append(RssiObservation(float(measured_t), float(rssi)))
         if self._camera_started:
             marker_frame, camera_error = self.camera.snapshot()
@@ -122,11 +128,33 @@ class AutoParkRunner:
         link.send_drive(out.left, out.right)
 
         self._publish(out)
+        self._log_beacon(now)
 
         if self.controller.terminal:
             self._enabled = False
             self.close()
         return out
+
+    def _log_beacon(self, now: float) -> None:
+        """비콘 탐색 중 0.5초마다 평균 계산 상태를 보여 준다."""
+        if self.controller.phase.value != "BEACON_SEARCH":
+            return
+        if now - getattr(self, "_last_beacon_log", 0.0) < 0.5:
+            return
+        self._last_beacon_log = now
+        bs = getattr(self.controller, "beacon_search", None)
+        det = getattr(bs, "detector", None)
+        if det is None:
+            return
+        samples = list(getattr(det, "_samples", []))
+        last = f"{samples[-1][1]:.0f}" if samples else "-"
+        avg = f"{det.filtered:.1f}" if det.filtered is not None else "-"
+        peak = f"{det.peak_rssi:.1f}" if det.peak_rssi is not None else "-"
+        below = ""
+        if det.filtered is not None and det.peak_rssi is not None:
+            below = f", 최대보다 {det.peak_rssi - det.filtered:.1f}dB 낮음 (기준 {det.cfg.drop_db:g})"
+        self.log(f"[beacon] 최근 {last} | 평균({det.cfg.window_sec:g}초 {len(samples)}개) {avg}"
+                 f" | 최대 {peak}{below} | {getattr(bs.phase, 'value', bs.phase)}")
 
     def _publish(self, out: AutoParkOutput) -> None:
         self.last_output = out

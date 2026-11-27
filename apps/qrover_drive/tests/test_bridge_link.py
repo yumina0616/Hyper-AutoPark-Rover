@@ -120,7 +120,7 @@ class DistanceTest(unittest.TestCase):
     def test_stale_after_stale_sec(self):
         link, _, clock = make()
         link.on_distance(250, RANGE_OK)
-        clock.now += 0.31
+        clock.now += link.cfg.stale_sec + 0.01
         self.assertTrue(link.latest_distance().stale)
 
     def test_keeps_status_code(self):

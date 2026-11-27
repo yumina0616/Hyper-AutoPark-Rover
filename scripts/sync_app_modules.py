@@ -27,6 +27,7 @@ APPS = {
         "vision/align.py",
         "vision/aruco.py",
         "vision/aruco_auto_align.py",
+        "vision/pose.py",
     ],
 }
 

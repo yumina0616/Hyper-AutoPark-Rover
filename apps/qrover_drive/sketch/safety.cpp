@@ -47,3 +47,25 @@ const char* safetyReasonName(SafetyReason reason) {
   }
   return "UNKNOWN";
 }
+
+void classifyRange(int vlStatus, int rawMm, int &distanceMm, int &rangeStatus) {
+  distanceMm = -1;
+  switch (vlStatus) {
+    case 0:
+      distanceMm = rawMm;
+      rangeStatus = RANGE_OK;
+      return;
+    case 1:
+    case 2:
+    case 4:
+      rangeStatus = RANGE_OUT_OF_RANGE;
+      return;
+    case 3:
+      distanceMm = 0;  // 너무 가까움 → 가장 가까운 값으로 보고 정지하게 한다
+      rangeStatus = RANGE_OK;
+      return;
+    default:
+      rangeStatus = RANGE_ERROR;
+      return;
+  }
+}
