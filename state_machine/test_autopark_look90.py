@@ -95,7 +95,7 @@ class WallDistanceCheckTest(unittest.TestCase):
             out = step(ctrl, now + 0.5 * i + 0.11, [marker(2, 540, offset=120), marker(3, 550, size=90)])
         self.assertEqual((out.left, out.right), (0, 0))
         self.assertIn("510 → 540mm (변화 +30mm, 같은 2번", out.detail)
-        self.assertIn("목표 +870mm, 주행 명령 6.00초", out.detail)
+        self.assertIn("목표 +170mm, 주행 명령 1.23초", out.detail)
         self.assertIn("통로 이동 추정 +120mm", out.detail)
         self.assertNotIn("벽 거리 비교", step(ctrl, now + 1.7, [marker(3, 550)]).detail)
 
@@ -128,6 +128,7 @@ class LookDecisionTest(unittest.TestCase):
         move = ctrl._realign_plan[-1]
         self.assertEqual((move[1], move[2]), (-v, -v))                   # 지나쳤으니 뒤로
         self.assertIn("뒤로 80mm", move[3])
+        self.assertAlmostEqual(move[0] - ctrl._realign_plan[-2][0], 80 / 153)
         turns = [s for s in ctrl._realign_plan if s[1] != 0 and s[1] == -s[2]]
         self.assertEqual(len(turns), ctrl.cfg.right_pulses_per_90)
         self.assertEqual(ctrl._after_plan_stage, "TURN_IN")              # 이동 후 다시 90° 보기
@@ -152,12 +153,12 @@ class LookDecisionTest(unittest.TestCase):
         self.assertEqual(ctrl._after_plan_stage, "LOOK")                 # 바로잡고 다시 보기
 
     def test_only_other_marker_uses_order_and_its_offset(self):
-        # 목표 0 안 보이고 3번이 30mm 옆에 보임. 순서 1,2,3,0,4 → 0은 3번보다 한 칸(290mm) 앞
+        # 목표 0 안 보이고 3번이 30mm 옆에 보임. 순서 1,2,3,0,4 → 0은 3번보다 한 칸(170mm) 앞
         ctrl = look_ctrl()
         look(ctrl, lambda t: [marker_at(30, 450, face_marker=False, t=t, marker_id=3)])
         move = ctrl._realign_plan[-1]
         self.assertGreater(move[1], 0)
-        self.assertIn("앞으로 260mm", move[3])                            # 290 - 30
+        self.assertIn("앞으로 140mm", move[3])                            # 170 - 30
         self.assertIn("3번 기준 +1칸", ctrl.last_look)
 
     def test_nothing_visible_peeks_left_and_right_before_moving(self):
@@ -181,7 +182,7 @@ class LookDecisionTest(unittest.TestCase):
         look(ctrl, lambda t: [], t0=t)                                   # ③ 그래도 없으면 이동
         turns = [s for s in ctrl._realign_plan if s[1] != 0 and s[1] == -s[2]]
         self.assertEqual(len(turns), ctrl.cfg.right_pulses_per_90 - k)  # 직각에서 벗어난 만큼 덜 돈다
-        self.assertIn("앞으로 290mm", ctrl._realign_plan[-1][3])
+        self.assertIn("앞으로 170mm", ctrl._realign_plan[-1][3])
 
     def test_no_camera_frames_stops_instead_of_moving(self):
         # 영상이 한 장도 안 들어오면 "마커 없음"으로 보고 이동하면 안 된다

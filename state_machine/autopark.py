@@ -82,7 +82,7 @@ class AutoParkConfig:
     # marker_order = 진행 방향으로 지나가는 실제 마커 순서 (예: (2, 3, 4, 0, 1)). 비어 있으면
     # 다른 번호를 봐도 방향을 알 수 없으니 앞으로 한 칸씩 간다.
     marker_order: tuple = (1, 2, 3, 0, 4)       # 2026-11-27 시험장: 별표 출발 기준 지나가는 순서
-    slot_pitch_mm: float = 290.0                # 칸 사이 거리 (칸 24cm + 간격 5cm) TODO: 실측
+    slot_pitch_mm: float = 170.0                # 시험장 마커 중심 간 실측 거리
     max_research_attempts: int = 4
     # 마커를 화면 가운데로 맞추는 회전 (P제어). 예전 kp 100 / 최대 100 / 최소 60의 절반
     align_kp: float = 50.0
@@ -138,7 +138,8 @@ class AutoParkConfig:
     realign_backup_sec: float = 0.8             # 벽에서 떨어지는 후진 시간 TODO: 실측
     realign_turn_pwm: int = 40                  # 회전 속도 (예전 80의 절반, 2026-11-27)
     realign_turn_sec: float = 1.8               # realign_turn_pwm으로 약 90° 회전 시간 TODO: 실측
-    realign_mm_per_sec: float = 100.0           # realign_pwm 직진 속도 TODO: 실측
+    realign_mm_per_sec: float = 138.0           # PWM 80 전진 1초 실측
+    realign_reverse_mm_per_sec: float = 153.0   # PWM 80 후진 1초 실측
     realign_shift_min_sec: float = 0.2
     realign_shift_max_sec: float = 3.0
 
@@ -560,7 +561,7 @@ class AutoParkController:
         # 왼쪽 칸 배치에서 벽을 보면 원래 진행 방향은 오른쪽 → lateral +면 이미 칸을 지나친 것
         ahead = lateral_mm * (1 if self.cfg.marker_search_direction == "left" else -1) > 0
         shift_dir = -1 if ahead else 1
-        shift_sec = abs(lateral_mm) / self.cfg.realign_mm_per_sec
+        shift_sec = self._realign_travel_sec(shift_dir * abs(lateral_mm))
         shift_sec = min(self.cfg.realign_shift_max_sec, max(self.cfg.realign_shift_min_sec, shift_sec))
 
         t = now
@@ -726,12 +727,13 @@ class AutoParkController:
             else:
                 diff = 1
             move = diff * self.cfg.slot_pitch_mm - here
+            move = max(-self.cfg.slot_pitch_mm, min(self.cfg.slot_pitch_mm, move))
             self.last_look = (f"목표 안 보임, 가장 가까운 {nearest}번 기준 {diff:+d}칸"
                               f" → 통로 따라 {move:+.0f}mm 이동")
             return self._look_move(now, move)
 
         # 4) 아무것도 안 보이면: 벽을 제대로 보고 있으면 마커가 최소 하나는 보여야 한다
-        #    (50cm에서 화면 폭 약 41cm, 마커 간격 29cm). 90°가 빗나갔을 수 있으니
+        #    (50cm에서 화면 폭 약 41cm, 마커 간격 17cm). 90°가 빗나갔을 수 있으니
         #    먼저 좌우로 조금씩 돌아서 더 본다. 그래도 없으면 직각으로 돌아온 뒤 앞으로 한 칸.
         k = self.cfg.peek_pulses
         if self._peek == 0:
@@ -778,6 +780,10 @@ class AutoParkController:
             f"(변화 {end - start:+.0f}mm, {markers}, {command}{travel})"
         )
 
+    def _realign_travel_sec(self, move_mm: float) -> float:
+        speed = self.cfg.realign_mm_per_sec if move_mm >= 0 else self.cfg.realign_reverse_mm_per_sec
+        return abs(move_mm) / speed
+
     def _look_move(self, now: float, move_mm: float) -> AutoParkOutput:
         if self.look_moves >= self.cfg.max_look_moves:
             return self._abort(f"목표 ID {self.target_slot} 마커 앞으로 {self.look_moves}번 옮겨도 못 맞춤")
@@ -788,7 +794,7 @@ class AutoParkController:
         self._peek, self._peek_offset = 0, 0
         plan, t = self._pulse_plan(now, to_aisle, count, "통로 방향으로 90° 회전")
         v = self.cfg.realign_pwm * (1 if move_mm > 0 else -1)
-        sec = min(6.0, max(self.cfg.realign_shift_min_sec, abs(move_mm) / self.cfg.realign_mm_per_sec))
+        sec = min(6.0, max(self.cfg.realign_shift_min_sec, self._realign_travel_sec(move_mm)))
         before = {
             mid: samples for mid, samples in self._look_poses.items()
             if len(samples) >= self.cfg.look_min_frames
@@ -870,7 +876,7 @@ class AutoParkController:
 
         turn = self.cfg.search_pulse_pwm
         move = self.cfg.realign_pwm * (1 if slots > 0 else -1)
-        move_sec = abs(slots) * self.cfg.slot_pitch_mm / self.cfg.realign_mm_per_sec
+        move_sec = self._realign_travel_sec(slots * self.cfg.slot_pitch_mm)
         move_sec = min(6.0, max(self.cfg.realign_shift_min_sec, move_sec))
 
         t = now
