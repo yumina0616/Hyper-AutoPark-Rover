@@ -223,6 +223,7 @@ class AutoParkController:
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
+        self._seen_sizes: dict[int, float] = {}  # 번호별 가장 크게 보인 크기(px) = 가까운 정도
         self.search_pulses = 0                  # 이번 탐색에서 찾으며 돈 횟수
         self._pulse_log: list[tuple[int, float]] = []   # 돈 기록 (방향 +1 오른쪽/-1 왼쪽, 시간)
         self._pulse_owner: Optional[float] = None       # 어느 정렬 단계의 기록인지
@@ -353,6 +354,8 @@ class AutoParkController:
                     if mid in self._seen_other_ids:
                         self._seen_other_ids.remove(mid)
                     self._seen_other_ids.append(mid)
+                    size = float(getattr(m, "size_px", 0.0))
+                    self._seen_sizes[mid] = max(size, self._seen_sizes.get(mid, 0.0))
         if (
             distance is not None
             and distance.status == RANGE_OK
@@ -555,10 +558,20 @@ class AutoParkController:
 
     # ── 재탐색 (목표 ID를 못 찾음) ─────────────────────────────
     def research_slots(self) -> int:
-        """몇 칸 이동할지. + = 진행 방향(앞), - = 뒤. 본 마커 번호와 실제 순서로 정한다."""
+        """몇 칸 이동할지. + = 진행 방향(앞), - = 뒤. 본 마커 번호와 실제 순서로 정한다.
+
+        한 번 돌면 여러 마커가 보이므로, 가장 크게 보인(= 로버와 가장 가까운) 마커를 기준으로
+        한다. 2026-11-27 실주행: 4,3,2,1을 다 보고도 마지막에 본 1번 기준으로 3칸을 가 버렸다.
+        """
         order = list(self.cfg.marker_order)
         if self.target_slot in order:
-            for seen in reversed(self._seen_other_ids):
+            sized = [(size, mid) for mid, size in self._seen_sizes.items() if mid in order]
+            if sized:
+                nearest = max(sized)[1]
+                diff = order.index(self.target_slot) - order.index(nearest)
+                if diff != 0:
+                    return diff
+            for seen in reversed(self._seen_other_ids):   # 크기 정보가 없을 때
                 if seen in order:
                     diff = order.index(self.target_slot) - order.index(seen)
                     if diff != 0:
@@ -572,6 +585,7 @@ class AutoParkController:
         slots = self.research_slots()
         seen = list(self._seen_other_ids)
         self._seen_other_ids = []
+        self._seen_sizes = {}
 
         turn = self.cfg.search_pulse_pwm
         move = self.cfg.realign_pwm * (1 if slots > 0 else -1)

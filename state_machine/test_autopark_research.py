@@ -118,6 +118,19 @@ class ResearchTest(unittest.TestCase):
         step(ctrl, 10.0, ids=(17, 0))
         self.assertEqual(ctrl._seen_other_ids, [0])
 
+    def test_uses_nearest_marker_not_last_seen(self):
+        # 실주행: 4, 3, 2, 1 순서로 봤지만 가장 크게 보인 건 3번 → 목표 0은 한 칸 앞
+        ctrl = AutoParkController(target_slot=0)
+        ctrl.phase = AutoParkPhase.ARUCO_ALIGN
+        ctrl.align_stage.reset(10.0)
+        for t, mid, size in [(10.0, 4, 70.0), (11.0, 3, 120.0), (12.0, 2, 60.0), (13.0, 1, 40.0)]:
+            frame = MarkerFrame(seq=int(t * 100), t=t, markers=[FakeMarker(mid, -0.5, size, t)],
+                                width_px=640)
+            ctrl.step(t, marker_frame=frame, distance=DistanceObservation(400, RANGE_OK, t),
+                      safety=SafetyObservation(SAFETY_PASS, t))
+        self.assertEqual(ctrl._seen_other_ids[-1], 1)
+        self.assertEqual(ctrl.research_slots(), 1)      # 3번 기준 (1번 기준이면 3칸)
+
     def test_unknown_order_defaults_to_one_slot_forward(self):
         ctrl = aligning()
         ctrl.cfg.marker_order = ()
