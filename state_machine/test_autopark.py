@@ -204,15 +204,15 @@ class AutoParkFlowTest(unittest.TestCase):
         first = run_step(
             ctrl,
             1.00,
-            marker_frame=frame(5, 1.00, err_x=0.0, size_px=145.0),
-            distance_obs=distance(1.00, 140),
+            marker_frame=frame(5, 1.00, err_x=0.0, size_px=310.0),
+            distance_obs=distance(1.00, 120),
         )
         self.assertEqual((first.left, first.right), (0, 0))
         parked = run_step(
             ctrl,
             1.10,
-            marker_frame=frame(6, 1.10, err_x=0.0, size_px=145.0),
-            distance_obs=distance(1.10, 140),
+            marker_frame=frame(6, 1.10, err_x=0.0, size_px=310.0),
+            distance_obs=distance(1.10, 120),
         )
         self.assertEqual(parked.phase, AutoParkPhase.PARKED)
         self.assertTrue(ctrl.terminal)
@@ -257,7 +257,7 @@ class AutoParkFlowTest(unittest.TestCase):
             ctrl,
             10.1,
             marker_frame=frame(1, 10.1, err_x=0.7),
-            distance_obs=distance(10.1, 140),
+            distance_obs=distance(10.1, 120),
         )
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("가까워", out.reason)

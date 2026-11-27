@@ -37,6 +37,7 @@ class MarkerFrame:
     t: float                 # time.time() 기준 수신/촬영 시각
     markers: Sequence[MarkerLike]
     width_px: Optional[int] = None  # 실제 프레임 폭. 없으면 실행기 설정값을 사용
+    height_px: Optional[int] = None  # 실제 프레임 높이 (자세 추정용). 없으면 폭의 3/4
 
 
 @dataclass(frozen=True)
@@ -271,7 +272,9 @@ class ArucoCamera:
                 captured_t = time.time()
                 markers = detector.detect_markers(frame)
                 seq += 1
-                observation = MarkerFrame(seq, captured_t, markers, int(frame.shape[1]))
+                observation = MarkerFrame(
+                    seq, captured_t, markers, int(frame.shape[1]), int(frame.shape[0])
+                )
                 with self._lock:
                     self._frame = observation
         except Exception as exc:
