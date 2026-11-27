@@ -83,6 +83,21 @@ def ok_safety(t):
     return SafetyObservation(reason=SAFETY_PASS, t=t)
 
 
+def test_pose_check_logs_missing_target_and_invalid_pose_separately():
+    ctrl = AutoParkController(target_slot=0)
+    ctrl.phase = AutoParkPhase.POSE_CHECK
+    ctrl._pose_check_started_at = 1.0
+    missing = mframe(1, PoseMarker(1, 0.0, 150.0, 1.1))
+    invalid = mframe(2, PoseMarker(0, 0.0, 150.0, 1.2))
+    ctrl.step(1.1, marker_frame=missing, safety=ok_safety(1.1))
+    ctrl.step(1.2, marker_frame=invalid, safety=ok_safety(1.2))
+    out = ctrl.step(1.3, marker_frame=invalid, safety=ok_safety(1.3))
+    counts = "유효 자세 0/10, 새 영상 2장, 0번 미검출 1장, 검출 후 자세 계산 실패 1장"
+    assert counts in out.detail
+    out = ctrl.step(4.1, safety=ok_safety(4.1))
+    assert counts in out.reason
+
+
 def parking_ctrl(frames=3):
     ctrl = AutoParkController(target_slot=0)
     ctrl.cfg.align_mode = "sweep"   # 예전 재정렬(후진·회전·옆 이동) 테스트

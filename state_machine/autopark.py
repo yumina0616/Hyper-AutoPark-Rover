@@ -250,6 +250,8 @@ class AutoParkController:
         self._pose_check_started_at: Optional[float] = None
         self._pose_samples: list[tuple[float, float]] = []   # (yaw_deg, lateral_mm)
         self._pose_last_seq: Optional[int] = None
+        self._pose_frames_seen = 0
+        self._pose_target_seen = 0
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
@@ -487,6 +489,8 @@ class AutoParkController:
             self._pose_check_started_at = now
             self._pose_samples = []
             self._pose_last_seq = None
+            self._pose_frames_seen = 0
+            self._pose_target_seen = 0
             return self._stop("확인 지점 도착, 기울기 확인")
 
         out = self.parking_controller.update(marker, distance, now)
@@ -518,17 +522,19 @@ class AutoParkController:
             return self._abort(f"자세 확인 중 카메라 오류: {camera_error}")
         started = self._pose_check_started_at if self._pose_check_started_at is not None else now
         if now - started > self.cfg.pose_check_timeout_sec:
-            return self._abort("자세 확인 시간 초과 (마커 자세를 충분히 못 읽음)")
+            return self._abort(f"자세 확인 시간 초과 ({self._pose_check_counts()})")
 
         if marker_frame is not None and marker_frame.seq != self._pose_last_seq:
             self._pose_last_seq = marker_frame.seq
+            self._pose_frames_seen += 1
+            self._pose_target_seen += int(any(m.id == self.target_slot for m in marker_frame.markers))
             marker = self._target_marker(marker_frame)
             if marker is not None and marker.has_pose:
                 self._pose_samples.append((marker.yaw_deg, marker.lateral_mm))
 
         n = len(self._pose_samples)
         if n < self.cfg.pose_check_frames:
-            return self._stop(f"기울기 확인 중 ({n}/{self.cfg.pose_check_frames})")
+            return self._stop(f"기울기 확인 중 ({self._pose_check_counts()})")
 
         yaw = sum(y for y, _ in self._pose_samples) / n
         lateral = sum(x for _, x in self._pose_samples) / n
@@ -539,6 +545,15 @@ class AutoParkController:
             self.phase = AutoParkPhase.FRONT_PARK
             return self._stop(f"기울기 통과 ({yaw:+.1f}°, 옆 {lateral:+.0f}mm), 주차 계속")
         return self._start_realign(now, lateral, f"기울기 {yaw:+.1f}°, 옆 {lateral:+.0f}mm")
+
+    def _pose_check_counts(self) -> str:
+        valid = len(self._pose_samples)
+        return (
+            f"유효 자세 {valid}/{self.cfg.pose_check_frames}, "
+            f"새 영상 {self._pose_frames_seen}장, "
+            f"{self.target_slot}번 미검출 {self._pose_frames_seen - self._pose_target_seen}장, "
+            f"검출 후 자세 계산 실패 {self._pose_target_seen - valid}장"
+        )
 
     # ── 재정렬 ────────────────────────────────────────────────
     def _start_realign(self, now: float, lateral_mm: float, why: str) -> AutoParkOutput:
