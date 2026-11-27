@@ -181,3 +181,70 @@ class CameraBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CameraRetryTests(unittest.TestCase):
+    """영상 읽기가 잠깐 실패해도 카메라가 꺼지지 않는지 (가짜 OpenCV로)."""
+
+    def run_camera(self, reads, reopen_reads=None):
+        import sys
+        import time as _time
+        import types
+
+        class FakeCap:
+            def __init__(self, seq):
+                self.seq = list(seq)
+
+            def set(self, *a):
+                return True
+
+            def isOpened(self):
+                return True
+
+            def read(self):
+                if self.seq:
+                    return self.seq.pop(0)
+                _time.sleep(0.01)
+                return False, None
+
+            def release(self):
+                pass
+
+        caps = [FakeCap(reads)] + [FakeCap(r) for r in (reopen_reads or [])]
+        fake_cv2 = types.SimpleNamespace(CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4,
+                                         CAP_PROP_BUFFERSIZE=38, CAP_V4L2=200)
+        cam = ArucoCamera(camera_index=2)
+        cam._open_capture = lambda cv2: caps.pop(0) if caps else FakeCap([])
+        cam.READ_RETRIES = 3
+
+        class FakeDetector:
+            def detect_markers(self, frame):
+                return []
+
+        fake_aruco = types.SimpleNamespace(ArucoDetector=FakeDetector)
+        with patch.dict(sys.modules, {"cv2": fake_cv2, "vision.aruco": fake_aruco}):
+            with patch.object(auto_align_module.time, "sleep", lambda s: None):
+                cam.start()
+                cam._thread.join(timeout=2.0)
+        return cam
+
+    def frame(self):
+        return SimpleNamespace(shape=(480, 640, 3))
+
+    def test_brief_failures_then_frames_keep_running(self):
+        f = self.frame()
+        cam = self.run_camera([(False, None), (False, None), (True, f), (True, f)])
+        obs, err = cam.snapshot()
+        self.assertIsNotNone(obs)
+        self.assertEqual(obs.seq, 2)
+
+    def test_reopens_camera_after_many_failures(self):
+        f = self.frame()
+        cam = self.run_camera([(False, None)] * 3, reopen_reads=[[(True, f)]])
+        obs, err = cam.snapshot()
+        self.assertIsNotNone(obs)
+
+    def test_gives_up_after_reopen_fails(self):
+        cam = self.run_camera([(False, None)] * 3, reopen_reads=[[], []])
+        obs, err = cam.snapshot()
+        self.assertIn("프레임 읽기 실패", err)

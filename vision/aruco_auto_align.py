@@ -251,6 +251,23 @@ class ArucoCamera:
             return cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
         return cv2.VideoCapture(self.camera_index)
 
+    # 영상 읽기가 잠깐 실패해도 바로 포기하지 않는다 (2026-11-27 실주행: 한 번 실패로 카메라가
+    # 영영 꺼져서, 이후 "마커 안 보임"으로 잘못 판단했다). 연속 실패가 이만큼이면 카메라를 다시 연다.
+    READ_RETRIES = 20
+    REOPEN_TRIES = 2
+
+    def _open_configured(self, cv2):
+        cap = self._open_capture(cv2)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError(
+                f"카메라 {self.camera_index}을(를) 열 수 없음 (다른 프로그램이 쓰는 중인지 확인)"
+            )
+        return cap
+
     def _read_loop(self) -> None:
         cap = None
         try:
@@ -258,17 +275,28 @@ class ArucoCamera:
             from vision.aruco import ArucoDetector
 
             detector = ArucoDetector()
-            cap = self._open_capture(cv2)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if not cap.isOpened():
-                raise RuntimeError(f"카메라 {self.camera_index}을(를) 열 수 없음")
+            cap = self._open_configured(cv2)
             seq = 0
+            fails = 0
+            reopens = 0
             while not self._stop.is_set():
                 ok, frame = cap.read()
-                if not ok:
-                    raise RuntimeError("카메라 프레임 읽기 실패")
+                if not ok or frame is None:
+                    fails += 1
+                    if fails < self.READ_RETRIES:
+                        time.sleep(0.05)
+                        continue
+                    if reopens >= self.REOPEN_TRIES:
+                        raise RuntimeError(
+                            "카메라 프레임 읽기 실패 (다시 열어도 안 됨: USB 연결·전원·다른 프로그램 확인)"
+                        )
+                    reopens += 1
+                    fails = 0
+                    cap.release()
+                    time.sleep(0.5)
+                    cap = self._open_configured(cv2)
+                    continue
+                fails = 0
                 captured_t = time.time()
                 markers = detector.detect_markers(frame)
                 seq += 1
