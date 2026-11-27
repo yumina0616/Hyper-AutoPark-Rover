@@ -9,9 +9,12 @@ from typing import Callable, Optional
 
 # App Lab 밖에서 테스트할 때 저장소 공용 모듈을 찾는다. App Lab에서는
 # scripts/sync_app_modules.py가 같은 python/ 아래로 복사한 모듈을 사용한다.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# App Lab 컨테이너에서는 이 파일이 /app/python/에 있어서 위로 3단계 폴더가 없다
+# (parents[3] → IndexError로 앱이 바로 꺼졌음, 2026-11-27). 그때는 복사본을 쓰므로 건너뛴다.
+_PARENTS = Path(__file__).resolve().parents
+if len(_PARENTS) > 3 and (_PARENTS[3] / "state_machine").is_dir():
+    if str(_PARENTS[3]) not in sys.path:
+        sys.path.insert(0, str(_PARENTS[3]))
 
 from bridge_link import BridgeLink  # noqa: E402
 from state_machine.autopark import (  # noqa: E402
