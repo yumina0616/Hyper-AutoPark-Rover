@@ -42,4 +42,14 @@ SafetyResult applySafety(WheelCommand requested,
 
 const char* safetyReasonName(SafetyReason reason);
 
+// VL53L0X 측정 결과(RangeStatus, 원래 거리)를 우리 상태 코드로 바꾼다. (Arduino 없이 테스트 가능)
+//   0 정상                        → RANGE_OK, 측정 거리
+//   1 Sigma fail / 2 Signal fail  → RANGE_OUT_OF_RANGE (잡히는 물체가 없거나 신호가 약함)
+//   3 Min range fail (너무 가까움) → RANGE_OK, 0mm  → 전진이면 비상정지
+//   4 Phase fail (범위 밖)         → RANGE_OUT_OF_RANGE
+//   그 밖 (5 Hardware fail 등)     → RANGE_ERROR
+// 2026-11-27 실측: 앞이 비었거나 손을 대고 떼는 순간 1·2가 한 번씩 섞여 나왔고,
+// 예전처럼 1~3을 오류로 보면 그 한 번에 주행 전체가 ABORT됐다.
+void classifyRange(int vlStatus, int rawMm, int &distanceMm, int &rangeStatus);
+
 #endif

@@ -40,13 +40,6 @@ void readDistance(int &distanceMm, int &rangeStatus) {
   VL53L0X_RangingMeasurementData_t measurement;
   distanceSensor.rangingTest(&measurement, false);
 
-  // VL53L0X RangeStatus: 0 = 정상, 4 = 범위 밖(phase fail), 1~3 = 신호 약함 등 측정 실패
-  if (measurement.RangeStatus == 0) {
-    distanceMm = measurement.RangeMilliMeter;
-    rangeStatus = RANGE_OK;
-  } else if (measurement.RangeStatus == 4) {
-    rangeStatus = RANGE_OUT_OF_RANGE;
-  } else {
-    rangeStatus = RANGE_ERROR;
-  }
+  // 상태 코드 분류는 safety.cpp의 classifyRange (테스트: tests/test_safety.cpp)
+  classifyRange(measurement.RangeStatus, measurement.RangeMilliMeter, distanceMm, rangeStatus);
 }
