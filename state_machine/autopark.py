@@ -252,6 +252,11 @@ class AutoParkController:
         self._pose_last_seq: Optional[int] = None
         self._pose_frames_seen = 0
         self._pose_target_seen = 0
+        self._pose_reacquire_used = False
+        self._target_frame_seq: Optional[int] = None
+        self._target_bearing: Optional[float] = None
+        self._turn_since_target = 0
+        self._target_recovery: Optional[tuple[int, int]] = None  # 첫 방향, 회전 횟수
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
@@ -270,6 +275,7 @@ class AutoParkController:
         self._look_obs: list[tuple[int, float, Optional[float], Optional[float]]] = []  # (id, 크기, yaw, 옆)
         self._look_poses: dict[int, list[Pose]] = {}
         self._look_yaws: list[float] = []
+        self._look_target_visible = False
         self._wall_before_move: Optional[tuple[dict[int, list[Pose]], float, float]] = None
         self._look_frames = 0                   # 보는 동안 받은 새 영상 수
         self._yaw_fixes = 0
@@ -310,11 +316,17 @@ class AutoParkController:
             return self._abort(self._safety_reason(safety.reason))
         if self.phase == AutoParkPhase.BEACON_SEARCH:
             return self._step_beacon(now, target_rssi, distance)
+        if self.cfg.align_mode == "look90":
+            self._remember_target(now, marker_frame)
         if self.phase == AutoParkPhase.ARUCO_ALIGN:
             return self._step_align(now, marker_frame, distance, camera_error)
         if self.phase == AutoParkPhase.POSE_CHECK:
-            return self._step_pose_check(now, marker_frame, camera_error)
+            return self._step_pose_check(now, marker_frame, camera_error, distance)
         if self.phase == AutoParkPhase.REALIGN:
+            if self._target_recovery is not None and camera_error:
+                return self._abort(f"목표 마커 재탐색 중 카메라 오류: {camera_error}")
+            if self._target_recovery is not None and not self._recovery_clearance(distance):
+                return self._abort("목표 마커 재탐색 중 거리 확인 불가 또는 벽에 너무 가까움")
             return self._step_realign(now, distance)
         return self._step_front_park(now, marker_frame, distance, camera_error)
 
@@ -509,6 +521,7 @@ class AutoParkController:
             return self._abort(
                 f"전면 주차 안전 정지 ({self.parking_controller.stop_reason or '이유 없음'})"
             )
+        self._remember_motion(out.left, out.right)
         return AutoParkOutput(self.phase, out.left, out.right, out.state.value)
 
     # ── 자세 확인 ─────────────────────────────────────────────
@@ -517,11 +530,24 @@ class AutoParkController:
         now: float,
         marker_frame: Optional[MarkerFrame],
         camera_error: Optional[str],
+        distance: Optional[DistanceObservation] = None,
     ) -> AutoParkOutput:
         if camera_error:
             return self._abort(f"자세 확인 중 카메라 오류: {camera_error}")
         started = self._pose_check_started_at if self._pose_check_started_at is not None else now
         if now - started > self.cfg.pose_check_timeout_sec:
+            if (
+                self.cfg.align_mode == "look90"
+                and not self._pose_reacquire_used
+                and self._pose_frames_seen > self._pose_target_seen
+                and self._target_bearing is not None
+                and marker_frame is not None
+                and now - marker_frame.t <= self.cfg.look_frame_max_age_sec
+                and not any(m.id == self.target_slot for m in marker_frame.markers)
+                and self._recovery_clearance(distance)
+            ):
+                self._pose_reacquire_used = True
+                return self._begin_target_recovery(now)
             return self._abort(f"자세 확인 시간 초과 ({self._pose_check_counts()})")
 
         if marker_frame is not None and marker_frame.seq != self._pose_last_seq:
@@ -609,6 +635,7 @@ class AutoParkController:
         self._look_obs = []
         self._look_poses = {}
         self._look_yaws = []
+        self._look_target_visible = False
         self._look_frames = 0
         if stage == "TURN_IN":
             self._yaw_fixes = 0
@@ -625,6 +652,76 @@ class AutoParkController:
     def _travel_sign(self) -> int:
         """벽을 볼 때 자세의 옆 오차(+ = 카메라가 오른쪽)를 진행 방향 앞(+)으로 바꾸는 부호."""
         return 1 if self.cfg.marker_search_direction == "left" else -1
+
+    def _remember_target(self, now: float, frame: Optional[MarkerFrame]) -> None:
+        if (
+            frame is None
+            or frame.seq == self._target_frame_seq
+            or now - frame.t > self.cfg.look_frame_max_age_sec
+        ):
+            return
+        self._target_frame_seq = frame.seq
+        for marker in frame.markers:
+            if marker.id == self.target_slot:
+                self._target_bearing = getattr(marker, "err_x", 0.0)
+                self._turn_since_target = 0
+                break
+
+    def _remember_motion(self, left: int, right: int) -> None:
+        if left + right:
+            # 이동 후의 시야는 이동 전 회전 기록으로 복구할 수 없다.
+            self._target_bearing = None
+            self._turn_since_target = 0
+        elif left and self._target_bearing is not None and not self._turn_since_target:
+            self._turn_since_target = 1 if left > 0 else -1
+
+    def _recovery_clearance(self, distance: Optional[DistanceObservation]) -> bool:
+        return bool(
+            distance is not None
+            and distance.status == RANGE_OK
+            and distance.dist_mm > self.parking_controller.cfg.park_distance_mm
+        )
+
+    def _begin_target_recovery(self, now: float) -> AutoParkOutput:
+        along_view = 1 if self._target_bearing > 0 else -1
+        direction = -self._turn_since_target or along_view
+        self._target_recovery = (direction, 0)
+        self.phase = AutoParkPhase.ARUCO_ALIGN
+        self._yaw_fixes = 0
+        self._enter_look("LOOK")
+        return self._stop(f"목표 {self.target_slot}번 유실, 마지막 검출 방향으로 재탐색")
+
+    def _step_target_recovery(self, now: float, distance: Optional[DistanceObservation]) -> AutoParkOutput:
+        first_direction, attempts = self._target_recovery
+        poses = self._look_poses.get(self.target_slot, [])
+        direction = None
+        if self._look_target_visible and len(poses) >= self.cfg.look_min_frames:
+            yaw = median(p.yaw_deg for p in poses)
+            offset = median(p.offset_mm for p in poses)
+            self.last_look = f"목표 {self.target_slot}번 재검출 (각도 {yaw:+.1f}°, 옆 {offset:+.0f}mm)"
+            if abs(offset) > self.parking_controller.cfg.lateral_tol_mm:
+                if not self._recovery_clearance(distance):
+                    return self._abort("목표 마커 재검출 후 이동 여유 부족")
+                pitch = self.cfg.slot_pitch_mm
+                move = max(-pitch, min(pitch, -self._travel_sign() * offset))
+                self._target_recovery = None
+                self._pose_checked = False
+                self._parking_started_at = None
+                return self._look_move(now, move, wall_yaw=yaw)
+            if abs(yaw) <= self.parking_controller.cfg.tilt_tol_deg:
+                self._target_recovery = None
+                self._pose_checked = False
+                self._parking_started_at = None
+                return self._start_front_park(now, self.last_look)
+            # 옆 위치가 맞으면 최신 목표 자세로 방향부터 보정하고 다시 확인한다.
+            direction = 1 if yaw > 0 else -1
+        # 먼저 두 번 되돌아가고, 놓쳤으면 반대쪽도 한 번씩 확인한다.
+        if attempts >= 6 or not self._recovery_clearance(distance):
+            return self._abort(f"목표 {self.target_slot}번 재탐색 중단 ({attempts}회)")
+        direction = direction or (first_direction if attempts < 2 else -first_direction)
+        self._target_recovery = (first_direction, attempts + 1)
+        plan, _ = self._pulse_plan(now, direction, 1, "목표 마커 재탐색 회전")
+        return self._run_plan(now, plan, "LOOK", f"목표 {self.target_slot}번 재탐색 {attempts + 1}/6")
 
     def _pulse_plan(self, now: float, sign: int, count: int, label: str, t: Optional[float] = None):
         p = self.cfg.search_pulse_pwm
@@ -686,6 +783,7 @@ class AutoParkController:
                 self._look_obs.append((mid, float(getattr(m, "size_px", 0.0)), yaw, lat))
             for mid, pose in frame_poses.items():
                 self._look_poses.setdefault(mid, []).append(pose)
+            self._look_target_visible = self.target_slot in frame_poses
             if frame_poses:
                 self._look_yaws.append(median(pose.yaw_deg for pose in frame_poses.values()))
         waited = now - self._look_started
@@ -696,6 +794,20 @@ class AutoParkController:
             if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
                 return self._stop("카메라 영상 기다리는 중")
             return self._abort("카메라 영상이 안 들어옴 (마커를 볼 수 없어 멈춤)")
+        if self._target_recovery is not None:
+            if marker_frame is None or now - marker_frame.t > self.cfg.look_frame_max_age_sec:
+                if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
+                    return self._stop("목표 재탐색 영상 대기")
+                return self._abort("목표 재탐색 중 새 카메라 영상 없음")
+            return self._step_target_recovery(now, distance)
+        if (
+            self._turn_since_target
+            and marker_frame is not None
+            and now - marker_frame.t <= self.cfg.look_frame_max_age_sec
+            and not any(m.id == self.target_slot for m in marker_frame.markers)
+            and self._recovery_clearance(distance)
+        ):
+            return self._begin_target_recovery(now)
         if self._yaw_fixes and len(self._look_yaws) < self.cfg.look_min_frames:
             if waited < self.cfg.look_sec + self.cfg.look_frame_wait_sec:
                 return self._stop("보정 회전 후 마커 각도 확인 대기")
@@ -807,13 +919,16 @@ class AutoParkController:
         speed = self.cfg.realign_mm_per_sec if move_mm >= 0 else self.cfg.realign_reverse_mm_per_sec
         return abs(move_mm) / speed
 
-    def _look_move(self, now: float, move_mm: float) -> AutoParkOutput:
+    def _look_move(self, now: float, move_mm: float, wall_yaw: Optional[float] = None) -> AutoParkOutput:
         if self.look_moves >= self.cfg.max_look_moves:
             return self._abort(f"목표 ID {self.target_slot} 마커 앞으로 {self.look_moves}번 옮겨도 못 맞춤")
         self.look_moves += 1
         to_aisle = -self._to_wall()
         # 좌우 확인으로 직각에서 벗어난 만큼(_peek_offset) 더하거나 빼서 정확히 통로 방향을 본다
         count = max(0, self._pulses_for_90(to_aisle) + self._peek_offset)
+        if wall_yaw is not None:
+            angle = 90.0 + to_aisle * wall_yaw
+            count = max(0, round(angle * self._pulses_for_90(to_aisle) / 90.0))
         self._peek, self._peek_offset = 0, 0
         plan, t = self._pulse_plan(now, to_aisle, count, "통로 방향으로 90° 회전")
         v = self.cfg.realign_pwm * (1 if move_mm > 0 else -1)
@@ -947,6 +1062,7 @@ class AutoParkController:
             and distance.dist_mm <= self.cfg.beacon_obstacle_stop_mm
         ):
             return self._abort("재정렬 직진 중 전방 장애물 감지")
+        self._remember_motion(left, right)
         return AutoParkOutput(self.phase, left, right, label, self.reason)
 
     def _target_marker(self, frame: Optional[MarkerFrame]) -> Optional[MarkerObservation]:

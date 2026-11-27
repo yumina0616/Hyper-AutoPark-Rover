@@ -80,6 +80,55 @@ class ApproachLateralToleranceTest(unittest.TestCase):
                 self.assertEqual(ctrl._decide_look(12.0).phase, phase)
 
 
+class TargetReacquireTest(unittest.TestCase):
+    def test_remembers_target_during_turn_and_uses_fresh_pose_to_shift(self):
+        ctrl = look_ctrl()
+        ctrl._enter_look("TURN_IN")
+        ctrl.pose_estimator = SimpleNamespace(estimate=lambda marker, *_: marker.pose)
+        target = SimpleNamespace(id=0, err_x=-0.3, size_px=150, corners=True,
+                                 pose=Pose(400, -65, 12, 0))
+        step(ctrl, 10.0)
+        step(ctrl, 10.05, [target])
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)
+        step(ctrl, now + 0.1)
+        out = step(ctrl, now + 1.7)
+        self.assertIn("마지막 검출 방향", out.detail)
+        out = look(ctrl, lambda _: [], t0=now + 1.8)
+        self.assertEqual((out.left, out.right), (50, -50))
+        self.assertEqual(sum(left != 0 for _, left, _, _ in ctrl._realign_plan), 1)
+        now = ctrl._realign_plan[-1][0] + 0.01
+        step(ctrl, now)
+        out = look(ctrl, lambda _: [target], t0=now + 0.1)
+        self.assertIn("재검출", out.reason)
+        turns = [part for part in ctrl._realign_plan if part[1] == -part[2] and part[1]]
+        self.assertEqual(len(turns), 19)  # 오른쪽 기본 17회에서 현재 yaw +12° 보상
+        self.assertEqual(ctrl._realign_plan[-1][1:], (80, 80, "통로 따라 앞으로 65mm"))
+        self.assertEqual(ctrl._after_plan_stage, "TURN_IN")
+
+    def test_pose_timeout_retries_only_after_target_loss_and_with_clearance(self):
+        marker = SimpleNamespace(id=0, err_x=0.7, size_px=150, corners=True, t=10.1,
+                                 pose=Pose(310, -20, 4, 0))
+        for mm in (310, 100):
+            with self.subTest(mm=mm):
+                ctrl = look_ctrl()
+                ctrl.phase = AutoParkPhase.POSE_CHECK
+                ctrl._pose_check_started_at = 10.0
+                ctrl.pose_estimator = SimpleNamespace(estimate=lambda marker, *_: marker.pose)
+                step(ctrl, 10.1, [marker])
+                step(ctrl, 10.2)
+                now = 13.1
+                frame = MarkerFrame(seq=99, t=now, markers=[], width_px=W, height_px=H)
+                out = ctrl.step(now, marker_frame=frame, distance=DistanceObservation(mm, RANGE_OK, now),
+                                safety=SafetyObservation(SAFETY_PASS, now))
+                self.assertEqual((out.left, out.right), (0, 0))
+                if mm == 310:
+                    self.assertIn("마지막 검출 방향", out.detail)
+                    self.assertTrue(ctrl._pose_reacquire_used)
+                else:
+                    self.assertEqual(out.phase, AutoParkPhase.ABORT)
+
+
 class WallDistanceCheckTest(unittest.TestCase):
     def test_compares_same_marker_after_a_complete_move(self):
         ctrl = look_ctrl()
