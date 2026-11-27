@@ -7,10 +7,12 @@
 // =====================================================
 
 // DRV8833 모터 드라이버 핀 (UNO Q에서 PWM이 되는 핀은 3·5·6·9뿐이라 변경 불가)
-const int LEFT_MOTOR_IN1  = 5;
-const int LEFT_MOTOR_IN2  = 3;
-const int RIGHT_MOTOR_IN1 = 6;
-const int RIGHT_MOTOR_IN2 = 9;
+// 2026-11-27 실주행: 왼쪽 회전 명령(L=-30, R=30)에 로버가 오른쪽으로 돌았다. 직진은 맞으므로
+// 실제 배선은 왼쪽·오른쪽 모터가 코드와 반대 → 핀 쌍을 서로 바꿈 (예전: 왼쪽 5·3, 오른쪽 6·9)
+const int LEFT_MOTOR_IN1  = 6;
+const int LEFT_MOTOR_IN2  = 9;
+const int RIGHT_MOTOR_IN1 = 5;
+const int RIGHT_MOTOR_IN2 = 3;
 
 // VL53L0X 거리 센서
 const int SENSOR_I2C_ADDRESS = 0x29;

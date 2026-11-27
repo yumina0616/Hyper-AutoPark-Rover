@@ -14,6 +14,12 @@
                         -> ARUCO_ALIGN(다시 마커 찾기) -> FRONT_PARK -> POSE_CHECK ...
     정지 위치에서 기울어져 멈춘 경우(MISALIGNED_NEAR)도 같은 REALIGN으로 다시 시도한다.
     재정렬은 max_realign_attempts번까지, 넘으면 ABORT.
+
+재탐색 (목표 ID 마커를 못 찾음):
+    ARUCO_ALIGN에서 marker_search_sec 동안 돌아도 목표 ID가 안 보이면
+      -> 통로 방향으로 되돌아 회전 -> 칸 단위로 앞/뒤 이동 -> ARUCO_ALIGN 다시
+    다른 번호가 보였고 marker_order(실제 배치 순서)가 있으면 그 차이만큼, 없으면 앞으로 한 칸.
+    max_research_attempts번까지, 넘으면 ABORT.
     엔코더가 없어 이동·회전량은 시간으로 정하고, 매번 카메라로 다시 확인해서 오차를 줄인다.
 """
 
@@ -59,8 +65,16 @@ class AutoParkConfig:
     # 2026-11-27 실주행: 탐색 회전 60은 너무 빨라 마커를 못 잡고 정렬 시간 초과 → 회전 속도 절반.
     # 느려진 만큼 탐색·정렬 제한 시간을 늘렸다. 30이 바닥에서 안 돌면 올릴 것 (TODO: MIN_PWM 실측)
     marker_search_pwm: int = 30
-    marker_search_sec: float = 12.0
+    # 한 번에 돌며 찾는 시간. 못 찾으면 통로 방향으로 되돌아 이동한 뒤 다시 찾는다(재탐색).
+    # PWM 30에서 약 130° 정도를 노린 값 (재정렬 90°=PWM 40·1.8초 기준 환산) TODO: 실측
+    marker_search_sec: float = 3.5
     align_timeout_sec: float = 25.0
+    # 재탐색: 목표 ID를 못 찾았을 때 몇 칸 앞/뒤로 갈지 정하는 정보
+    # marker_order = 진행 방향으로 지나가는 실제 마커 순서 (예: (2, 3, 4, 0, 1)). 비어 있으면
+    # 다른 번호를 봐도 방향을 알 수 없으니 앞으로 한 칸씩 간다.
+    marker_order: tuple = ()                    # TODO: 실제 배치 순서로 채우기
+    slot_pitch_mm: float = 290.0                # 칸 사이 거리 (칸 24cm + 간격 5cm) TODO: 실측
+    max_research_attempts: int = 4
     # 마커를 화면 가운데로 맞추는 회전 (P제어). 예전 kp 100 / 최대 100 / 최소 60의 절반
     align_kp: float = 50.0
     align_max_turn: int = 50
@@ -188,6 +202,8 @@ class AutoParkController:
         self._pose_samples: list[tuple[float, float]] = []   # (yaw_deg, lateral_mm)
         self._pose_last_seq: Optional[int] = None
         self.realign_attempts = 0
+        self.research_attempts = 0
+        self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
         self._realign_plan: list[tuple[float, int, int, str]] = []  # (끝 시각, L, R, 설명)
         self.last_pose: Optional[tuple[float, float]] = None        # 마지막 자세 확인 평균
         self.parking_controller.reset()
@@ -304,6 +320,13 @@ class AutoParkController:
         camera_error: Optional[str],
     ) -> AutoParkOutput:
         out = self.align_stage.step(marker_frame, now=now, camera_error=camera_error)
+        if marker_frame is not None:
+            for m in marker_frame.markers:
+                mid = int(getattr(m, "id", -1))
+                if mid != self.target_slot:
+                    if mid in self._seen_other_ids:
+                        self._seen_other_ids.remove(mid)
+                    self._seen_other_ids.append(mid)
         if (
             distance is not None
             and distance.status == RANGE_OK
@@ -311,6 +334,15 @@ class AutoParkController:
             and (out.left != 0 or out.right != 0)
         ):
             return self._abort("벽과 가까워 정렬 회전을 중단")
+        searched = now - self.align_stage.started_at
+        if (
+            not self.align_stage.has_seen_target
+            and (
+                (out.state == "MARKER_MISSING" and searched >= self.cfg.marker_search_sec)
+                or out.state == "TIMEOUT"
+            )
+        ):
+            return self._start_research(now, min(searched, self.cfg.marker_search_sec))
         if out.state == "ALIGNED":
             self.phase = AutoParkPhase.FRONT_PARK
             if self._parking_started_at is None:
@@ -464,6 +496,50 @@ class AutoParkController:
         self.reason = why
         return self._step_realign(now, None)
 
+    # ── 재탐색 (목표 ID를 못 찾음) ─────────────────────────────
+    def research_slots(self) -> int:
+        """몇 칸 이동할지. + = 진행 방향(앞), - = 뒤. 본 마커 번호와 실제 순서로 정한다."""
+        order = list(self.cfg.marker_order)
+        if self.target_slot in order:
+            for seen in reversed(self._seen_other_ids):
+                if seen in order:
+                    diff = order.index(self.target_slot) - order.index(seen)
+                    if diff != 0:
+                        return diff
+        return 1
+
+    def _start_research(self, now: float, rotated_sec: float) -> AutoParkOutput:
+        if self.research_attempts >= self.cfg.max_research_attempts:
+            return self._abort(f"목표 ID {self.target_slot} 마커를 {self.research_attempts}번 다시 찾아도 못 찾음")
+        self.research_attempts += 1
+        slots = self.research_slots()
+        seen = list(self._seen_other_ids)
+        self._seen_other_ids = []
+
+        to_aisle = 1 if self.cfg.marker_search_direction == "left" else -1
+        turn = self.cfg.marker_search_pwm
+        move = self.cfg.realign_pwm * (1 if slots > 0 else -1)
+        move_sec = abs(slots) * self.cfg.slot_pitch_mm / self.cfg.realign_mm_per_sec
+        move_sec = min(6.0, max(self.cfg.realign_shift_min_sec, move_sec))
+
+        t = now
+        plan = []
+        if rotated_sec > 0:
+            t += rotated_sec
+            plan.append((t, to_aisle * turn, -to_aisle * turn, "통로 방향으로 되돌아 회전"))
+        t += move_sec
+        where = "앞으로" if slots > 0 else "뒤로"
+        plan.append((t, move, move, f"{where} {abs(slots)}칸 이동"))
+        self._realign_plan = plan
+
+        self.phase = AutoParkPhase.REALIGN
+        self._pose_checked = False
+        self._parking_started_at = None
+        self.parking_controller.reset()
+        seen_txt = f", 본 마커 {seen}" if seen else ""
+        self.reason = f"목표 ID {self.target_slot} 못 찾음 → 재탐색 {self.research_attempts}회째{seen_txt}"
+        return self._step_realign(now, None)
+
     def _step_realign(
         self, now: float, distance: Optional[DistanceObservation]
     ) -> AutoParkOutput:
@@ -472,7 +548,7 @@ class AutoParkController:
         if not self._realign_plan:
             self.phase = AutoParkPhase.ARUCO_ALIGN
             self.align_stage.reset(now)
-            return self._stop(f"재정렬 이동 완료 ({self.realign_attempts}회째), 마커 다시 찾기")
+            return self._stop("이동 완료, 마커 다시 찾기")
         _, left, right, label = self._realign_plan[0]
         if (
             left + right > 0
