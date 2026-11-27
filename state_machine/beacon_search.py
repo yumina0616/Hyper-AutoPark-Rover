@@ -45,6 +45,8 @@ class SearchConfig:
     approach_rssi: Optional[float] = -76.0  # 이 이상이면 감속 (실측: 칸 조금 전 약 -78, 칸 앞 약 -72). None이면 감속 안 함   TODO: 실측 확정
     search_timeout: float = 30.0    # 출발 후 이 시간 안에 못 찾으면 중단 (#7 SEARCH_TIMEOUT)   TODO
     return_timeout: float = 10.0    # 복귀 시간이 이보다 길면 이상한 것 → 중단 (#7 RETURN_TIMEOUT) TODO
+    # 복귀(후진) 시간 = 지나간 시간 × 이 배율. 후진이 전진보다 덜 나가면 1보다 크게.
+    return_gain: float = 1.0        # TODO: 실측
     trim_left: int = 0              # 직진할 때 휘는 것 보정 (#9 TRIM)   TODO: 실험으로 결정
     trim_right: int = 0
 
@@ -140,7 +142,7 @@ class BeaconSearch:
         t = now
         self._return_plan = []
         for duration, pwm in reversed(pieces):  # 마지막에 간 구간부터 반대로
-            t += duration
+            t += duration * self.cfg.return_gain
             self._return_plan.append((t, -pwm))
 
     def _drive(self, pwm: int) -> SearchOutput:

@@ -84,7 +84,7 @@ class ResearchTest(unittest.TestCase):
         self.assertEqual(len(turn_back), cfg.search_max_pulses)
         self.assertTrue(all(seg[1] == p for seg in turn_back))
 
-        back_turn_end = t + cfg.search_max_pulses * (cfg.search_pulse_on_sec + cfg.search_pulse_off_sec)
+        back_turn_end = ctrl._realign_plan[-2][0]                       # 원상복구가 끝나는 시각
         move = step(ctrl, back_turn_end + 0.05)
         v = ctrl.cfg.realign_pwm
         self.assertEqual((move.left, move.right), (v, v))                # 앞으로 한 칸
@@ -146,6 +146,50 @@ class ResearchTest(unittest.TestCase):
             out = step(ctrl, t)
         self.assertEqual(out.phase, AutoParkPhase.ABORT)
         self.assertIn("못 찾음", out.reason)
+
+    def test_centering_turns_in_pulses_big_then_small(self):
+        ctrl = aligning()
+        cfg, p = ctrl.cfg, ctrl.cfg.search_pulse_pwm
+
+        def target(t, err):
+            frame = MarkerFrame(seq=int(t * 100), t=t, markers=[FakeMarker(TARGET, err, 80.0, t)],
+                                width_px=640)
+            return ctrl.step(t, marker_frame=frame, distance=DistanceObservation(400, RANGE_OK, t),
+                             safety=SafetyObservation(SAFETY_PASS, t))
+
+        out = target(10.0, 0.6)                                          # 오른쪽으로 많이 벗어남
+        self.assertEqual((out.left, out.right), (p, -p))
+        self.assertEqual(ctrl._pulse_log[-1], (1, cfg.search_pulse_on_sec))
+        out = target(10.0 + cfg.search_pulse_on_sec + 0.05, 0.6)
+        self.assertEqual((out.left, out.right), (0, 0))                  # 멈춰서 보기
+        t2 = 10.0 + cfg.search_pulse_on_sec + cfg.search_pulse_off_sec + 0.01
+        out = target(t2, -0.1)                                           # 거의 가운데, 살짝 왼쪽
+        self.assertEqual((out.left, out.right), (-p, p))
+        self.assertEqual(ctrl._pulse_log[-1], (-1, cfg.align_fine_on_sec))
+
+    def test_lost_after_seen_researches_and_replays_turns_in_reverse(self):
+        ctrl = aligning()
+        cfg, p = ctrl.cfg, ctrl.cfg.search_pulse_pwm
+        ctrl._pulse_owner = ctrl.align_stage.started_at
+        ctrl._pulse_log = [(-1, 0.1), (-1, 0.1), (1, 0.05)]             # 왼쪽 2번, 오른쪽 조금 1번
+        ctrl.align_stage.has_seen_target = True
+        out = ctrl._start_research(20.0)
+        self.assertEqual(out.phase, AutoParkPhase.REALIGN)
+        turns = [(s[1], s[2]) for s in ctrl._realign_plan if s[1] == -s[2] and s[1] != 0]
+        self.assertEqual(turns, [(-p, p), (p, -p), (p, -p)])            # 거꾸로: 왼쪽 조금, 오른쪽, 오른쪽
+
+    def test_marker_missing_after_reacquire_fail_researches(self):
+        ctrl = aligning()
+        ctrl._pulse_owner = ctrl.align_stage.started_at
+        ctrl.align_stage.has_seen_target = True
+        ctrl.align_stage._reacquire_started_at = 10.0
+        out = step(ctrl, 10.0 + ctrl.align_stage.cfg.lost_stop_sec + ctrl.align_stage.cfg.reacquire_sec + 0.1)
+        self.assertEqual(out.phase, AutoParkPhase.REALIGN)
+
+    def test_beacon_return_gain_lengthens_return(self):
+        ctrl = AutoParkController(target_slot=0)
+        self.assertEqual(ctrl.beacon_search.cfg.return_gain, ctrl.cfg.beacon_return_gain)
+        self.assertEqual(ctrl.beacon_search.cfg.search_pwm, ctrl.cfg.beacon_search_pwm)
 
     def test_target_found_does_not_research(self):
         ctrl = aligning()

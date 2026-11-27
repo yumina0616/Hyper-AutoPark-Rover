@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Sequence
 
-from state_machine.beacon_search import BeaconSearch, SearchPhase
+from state_machine.beacon_search import BeaconSearch, SearchConfig, SearchPhase
 from state_machine.front_parking import (
     DistanceObservation,
     FrontParkingConfig,
@@ -64,17 +64,19 @@ class AutoParkConfig:
     marker_search_direction: str = "left"
     # 2026-11-27 실주행: 탐색 회전 60은 너무 빨라 마커를 못 잡고 정렬 시간 초과 → 회전 속도 절반.
     # 느려진 만큼 탐색·정렬 제한 시간을 늘렸다. 30이 바닥에서 안 돌면 올릴 것 (TODO: MIN_PWM 실측)
-    marker_search_pwm: int = 30
-    marker_search_sec: float = 3.5               # (끊어 돌기를 쓰면 search_max_pulses가 대신 정한다)
-    # 탐색 회전은 "짧게 돌고 → 멈춰서 보기"를 반복한다 (2026-11-27 실주행 영상).
-    # PWM 30으로 계속 돌리면 바퀴가 걸렸다 미끄러져 각도가 매번 달랐고, 같은 시간만큼 되돌아
-    # 돌아도 방향이 안 맞아 재탐색할수록 직선에서 벗어났다. 한 번에 같은 양만큼 돌게 하고
-    # 몇 번 돌았는지 세어서, 되돌아갈 때 같은 횟수만큼 반대로 돈다.
-    search_pulse_pwm: int = 50                  # 한 번 돌 때 세기 (걸리지 않을 만큼) TODO: 실측
-    search_pulse_on_sec: float = 0.15           # 한 번 도는 시간 TODO: 실측
-    search_pulse_off_sec: float = 0.35          # 멈춰서 카메라로 보는 시간
-    search_max_pulses: int = 12                 # 이만큼 돌아도 목표 ID가 없으면 재탐색 TODO: 실측(각도)
-    align_timeout_sec: float = 25.0
+    marker_search_pwm: int = 30                 # (방향만 쓴다. 실제 세기는 search_pulse_pwm)
+    marker_search_sec: float = 3.5              # (예전 연속 회전용, 지금은 search_max_pulses가 정한다)
+    # 탐색·정렬 회전은 모두 "짧게 돌고 → 멈춰서 보기"를 반복한다 (2026-11-27 실주행).
+    # 계속 돌리면 각도가 매번 달랐고, 카메라가 늦어 마커를 지나쳤다.
+    # 돈 것은 하나하나 기록해서, 원상복구할 때 거꾸로 똑같이 되돌린다.
+    search_pulse_pwm: int = 50                  # 한 번 돌 때 세기 TODO: 실측
+    search_pulse_on_sec: float = 0.1            # 한 번 크게 도는 시간 TODO: 실측
+    align_fine_on_sec: float = 0.05             # 마커가 거의 가운데일 때 조금 도는 시간 TODO: 실측
+    align_fine_err: float = 0.25                # |err_x|가 이 이하이면 조금만 돈다
+    search_pulse_off_sec: float = 1.0           # 멈춰서 카메라로 보는 시간
+    search_max_pulses: int = 20                 # 이만큼 돌아도 목표 ID가 없으면 재탐색 TODO: 실측(각도)
+    replay_pause_sec: float = 0.3               # 원상복구 때 한 번 돌고 쉬는 시간
+    align_timeout_sec: float = 60.0
     # 재탐색: 목표 ID를 못 찾았을 때 몇 칸 앞/뒤로 갈지 정하는 정보
     # marker_order = 진행 방향으로 지나가는 실제 마커 순서 (예: (2, 3, 4, 0, 1)). 비어 있으면
     # 다른 번호를 봐도 방향을 알 수 없으니 앞으로 한 칸씩 간다.
@@ -92,6 +94,11 @@ class AutoParkConfig:
     parking_marker_hold_sec: float = 0.3
     max_parking_reacquire_attempts: int = 1
     rssi_future_tolerance_sec: float = 0.5
+
+    # 비콘 직진 (2026-11-27: 100으로는 판단이 나오기 전에 한참 지나가서 낮춤)
+    beacon_search_pwm: int = 70                 # TODO: 실측
+    beacon_approach_pwm: int = 55               # TODO: 실측
+    beacon_return_gain: float = 1.25            # 후진이 덜 돌아와서 늘림 TODO: 실측
 
     # 자세 추정 (vision/pose.py)
     camera_hfov_deg: float = DEFAULT_HFOV_DEG   # TODO: 카메라 보정으로 교체
@@ -166,7 +173,13 @@ class AutoParkController:
         ):
             raise ValueError("해상도·시간 제한·안전 거리는 양수이고 재시도 횟수는 0 이상이어야 합니다")
 
-        self.beacon_search = beacon_search or BeaconSearch()
+        self.beacon_search = beacon_search or BeaconSearch(
+            config=SearchConfig(
+                search_pwm=self.cfg.beacon_search_pwm,
+                approach_pwm=self.cfg.beacon_approach_pwm,
+                return_gain=self.cfg.beacon_return_gain,
+            )
+        )
         self.align_stage = align_stage or ArucoAlignStage(
             target_id=self.target_slot,
             config=StageConfig(
@@ -210,7 +223,12 @@ class AutoParkController:
         self.realign_attempts = 0
         self.research_attempts = 0
         self._seen_other_ids: list[int] = []   # 정렬 단계에서 본 다른 번호 마커 (최근 순)
-        self.search_pulses = 0                  # 이번 탐색에서 돈 횟수 (되돌아갈 때 같은 횟수)
+        self.search_pulses = 0                  # 이번 탐색에서 찾으며 돈 횟수
+        self._pulse_log: list[tuple[int, float]] = []   # 돈 기록 (방향 +1 오른쪽/-1 왼쪽, 시간)
+        self._pulse_owner: Optional[float] = None       # 어느 정렬 단계의 기록인지
+        self._pulse_sign = 0
+        self._pulse_on_until: Optional[float] = None
+        self._pulse_off_until: Optional[float] = None
         self._realign_plan: list[tuple[float, int, int, str]] = []  # (끝 시각, L, R, 설명)
         self.last_pose: Optional[tuple[float, float]] = None        # 마지막 자세 확인 평균
         self.parking_controller.reset()
@@ -342,11 +360,16 @@ class AutoParkController:
             and (out.left != 0 or out.right != 0)
         ):
             return self._abort("벽과 가까워 정렬 회전을 중단")
-        if not self.align_stage.has_seen_target:
-            if out.state == "TIMEOUT":
-                return self._start_research(now)
-            if out.state in ("SEARCHING", "SEARCHING_WRONG_MARKER"):
-                return self._search_pulse(now, out)
+        if self._pulse_owner != self.align_stage.started_at:   # 새 정렬 단계 → 기록 새로 시작
+            self._pulse_owner = self.align_stage.started_at
+            self._pulse_log = []
+            self.search_pulses = 0
+            self._pulse_on_until = self._pulse_off_until = None
+        if out.state in ("TIMEOUT", "MARKER_MISSING"):
+            # 못 찾았거나, 봤다가 놓치고 다시 못 찾음 → 원상복구 후 이동해서 다시 찾기
+            return self._start_research(now)
+        if out.state != "ALIGNED" and out.state != "CAMERA_ERROR":
+            return self._align_pulse(now, out)
         if out.state == "ALIGNED":
             self.phase = AutoParkPhase.FRONT_PARK
             if self._parking_started_at is None:
@@ -500,21 +523,35 @@ class AutoParkController:
         self.reason = why
         return self._step_realign(now, None)
 
-    # ── 끊어 돌기 탐색 ─────────────────────────────────────────
-    def _search_pulse(self, now: float, out) -> AutoParkOutput:
-        cycle = self.cfg.search_pulse_on_sec + self.cfg.search_pulse_off_sec
-        elapsed = max(0.0, now - self.align_stage.started_at)
-        k = int(elapsed // cycle)              # 지금이 몇 번째 돌기인지 (0부터)
-        if k >= self.cfg.search_max_pulses:
-            self.search_pulses = self.cfg.search_max_pulses
-            return self._start_research(now)
-        self.search_pulses = k + 1
-        sign = -1 if out.left < 0 else 1       # 탐색 방향 (왼쪽 탐색이면 왼쪽 바퀴 -)
-        if elapsed - k * cycle < self.cfg.search_pulse_on_sec:
-            p = self.cfg.search_pulse_pwm
-            return AutoParkOutput(self.phase, sign * p, -sign * p, out.state,
-                                  f"끊어 돌기 {k + 1}/{self.cfg.search_max_pulses}")
-        return AutoParkOutput(self.phase, 0, 0, out.state, "멈춰서 마커 확인")
+    # ── 끊어 돌기 (탐색·정렬 공통) ──────────────────────────────
+    def _align_pulse(self, now: float, out) -> AutoParkOutput:
+        p = self.cfg.search_pulse_pwm
+        if self._pulse_on_until is not None and now < self._pulse_on_until:
+            s = self._pulse_sign
+            return AutoParkOutput(self.phase, s * p, -s * p, out.state, "끊어 돌기")
+        if self._pulse_off_until is not None and now < self._pulse_off_until:
+            return AutoParkOutput(self.phase, 0, 0, out.state, "멈춰서 마커 확인")
+        rotating = out.left != 0 and out.left == -out.right
+        if not rotating:
+            return AutoParkOutput(self.phase, 0, 0, out.state, out.reason)
+
+        if out.state.startswith("SEARCHING"):
+            if self.search_pulses >= self.cfg.search_max_pulses:
+                return self._start_research(now)
+            self.search_pulses += 1
+            on = self.cfg.search_pulse_on_sec
+            what = f"찾으며 끊어 돌기 {self.search_pulses}/{self.cfg.search_max_pulses}"
+        else:   # TURNING(가운데로 맞추기), REACQUIRING(놓친 쪽으로 다시 찾기)
+            err = abs(out.err_x) if out.err_x is not None else 1.0
+            fine = err <= self.cfg.align_fine_err
+            on = self.cfg.align_fine_on_sec if fine else self.cfg.search_pulse_on_sec
+            what = "가운데로 조금 돌기" if fine else "가운데로 끊어 돌기"
+        sign = 1 if out.left > 0 else -1        # +1 = 오른쪽
+        self._pulse_log.append((sign, on))
+        self._pulse_sign = sign
+        self._pulse_on_until = now + on
+        self._pulse_off_until = now + on + self.cfg.search_pulse_off_sec
+        return AutoParkOutput(self.phase, sign * p, -sign * p, out.state, what)
 
     # ── 재탐색 (목표 ID를 못 찾음) ─────────────────────────────
     def research_slots(self) -> int:
@@ -536,7 +573,6 @@ class AutoParkController:
         seen = list(self._seen_other_ids)
         self._seen_other_ids = []
 
-        to_aisle = 1 if self.cfg.marker_search_direction == "left" else -1
         turn = self.cfg.search_pulse_pwm
         move = self.cfg.realign_pwm * (1 if slots > 0 else -1)
         move_sec = abs(slots) * self.cfg.slot_pitch_mm / self.cfg.realign_mm_per_sec
@@ -544,13 +580,17 @@ class AutoParkController:
 
         t = now
         plan = []
-        n = self.search_pulses
-        for i in range(n):   # 탐색에서 돈 횟수만큼 같은 세기·시간으로 반대로 돈다
-            t += self.cfg.search_pulse_on_sec
-            plan.append((t, to_aisle * turn, -to_aisle * turn, f"통로 방향으로 되돌아 회전 {i + 1}/{n}"))
-            t += self.cfg.search_pulse_off_sec
-            plan.append((t, 0, 0, f"통로 방향으로 되돌아 회전 {i + 1}/{n}"))
+        log = list(reversed(self._pulse_log))
+        n = len(log)
+        for i, (sign, on) in enumerate(log):   # 돈 것을 거꾸로, 같은 세기·같은 시간으로 되돌린다
+            label = f"통로 방향으로 원상복구 {i + 1}/{n}"
+            t += on
+            plan.append((t, -sign * turn, sign * turn, label))
+            t += self.cfg.replay_pause_sec
+            plan.append((t, 0, 0, label))
+        self._pulse_log = []
         self.search_pulses = 0
+        self._pulse_on_until = self._pulse_off_until = None
         t += move_sec
         where = "앞으로" if slots > 0 else "뒤로"
         plan.append((t, move, move, f"{where} {abs(slots)}칸 이동"))

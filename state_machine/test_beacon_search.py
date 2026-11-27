@@ -188,3 +188,16 @@ class BeaconSearchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReturnGainTest(unittest.TestCase):
+    def test_return_plan_scaled_by_gain(self):
+        # 최댓값 이후 2초를 달렸다면, 배율 1.25면 2.5초 후진한다
+        for gain, expected in [(1.0, 2.0), (1.25, 2.5)]:
+            s = BeaconSearch(config=SearchConfig(approach_rssi=None, return_gain=gain))
+            s.start(0.0)
+            s.step(0.0)
+            s.detector.peak_time = lambda: 1.0
+            s._begin_return(3.0)
+            self.assertAlmostEqual(s._return_plan[-1][0] - 3.0, expected)
+            self.assertLess(s._return_plan[-1][1], 0)
